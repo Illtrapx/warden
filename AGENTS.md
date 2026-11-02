@@ -42,6 +42,7 @@ Commit messages and PR descriptions carry no AI attribution lines
 | `crates/cli` | `warden-broker-cli`, the `warden` command agents run |
 | `crates/demo` | `warden-demo`: the throwaway local demo, never shipped (`docs/demo.md`) |
 | `docs/` | user and design documentation |
+| `site/` | the landing page on GitHub Pages: static HTML and CSS, no scripts, no external resources. It names no version and leaves setup commands to the README, so a release does not touch it |
 | `deploy/systemd` | the systemd unit that `docs/deployment-systemd.md` installs |
 | `scripts/` | CI guards and UI check tools (each script documents its usage) |
 
@@ -88,8 +89,9 @@ uvx zizmor@1.31.1 .   # when a workflow or the Dependabot config changes
   `CHANGELOG.md` ([Keep a Changelog](https://keepachangelog.com/en/1.1.0/)).
 - When behaviour changes, update the docs in the same pull request: the
   README, `docs/configuration.md`, `docs/deployment.md`,
-  `docs/agent-usage.md`, `docs/agent-protocol.md` and
-  `docs/threat-model.md` must stay consistent with the code.
+  `docs/agent-usage.md`, `docs/agent-protocol.md`,
+  `docs/threat-model.md` and `site/index.html` must stay consistent with the
+  code.
 - **Approval UI pages** follow `docs/design-language.md`. Render and
   screenshot them with `scripts/screenshot-pages.sh <out-dir>` at the sizes
   the PR template lists, light and dark, and attach the screenshots.

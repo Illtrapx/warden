@@ -1,6 +1,8 @@
 target
 .git
 .github
+docs/design
+site
 Dockerfile
 .dockerignore
 crates/demo/src

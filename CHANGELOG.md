@@ -39,6 +39,9 @@ All notable changes to this project are recorded here. The format follows
 - `docs/agent-instructions.md`, a block to paste into an agent's `AGENTS.md` or
   `CLAUDE.md`, and `docs/agent-examples.md`, with an SSH deployment and an API
   call end to end.
+- A landing page in `site/`, published to GitHub Pages by
+  `.github/workflows/pages.yml`. It is static, with no scripts or external
+  resources.
 
 ### Changed
 
