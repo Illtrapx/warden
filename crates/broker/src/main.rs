@@ -23,7 +23,6 @@ use warden_broker::notify::{ChannelSettings, Fallback, Notifier};
 use warden_broker::policy::local::{ACCESS_NOTE, Unverified, seal_policy_file};
 use warden_broker::policy::{LocalBackend, OnePasswordConnect, SecretBackend};
 use warden_broker::private_files::{self, DirectoryState};
-use warden_broker::proxy::CallSlots;
 use warden_broker::relay::host_key::RelayHostKey;
 use warden_broker::relay::{RelayEndpoint, RelayLimits, RelayServer, host_key};
 use warden_broker::requests::{self, AuditOutcome, Clock, Requests, SystemClock};
@@ -583,7 +582,8 @@ async fn build_app(config: &Arc<Config>) -> Result<App> {
         clock.clone(),
         relay,
     )
-    .with_limits(config.requests);
+    .with_limits(config.requests)
+    .with_call_limits(config.proxy.max_calls_per_agent, config.proxy.max_calls);
     let passkeys = Passkeys::new(
         pool.clone(),
         audit.clone(),
@@ -600,7 +600,6 @@ async fn build_app(config: &Arc<Config>) -> Result<App> {
         clock,
         requests: requests.clone(),
         passkeys: Arc::new(passkeys),
-        proxy_calls: CallSlots::new(config.proxy.max_calls_per_agent, config.proxy.max_calls),
         audience,
     };
     let (api, approval) = build_routers(state);

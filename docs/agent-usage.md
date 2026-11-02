@@ -451,7 +451,8 @@ the broker's size limit (1 MiB by default) or compressed are an error, and
 the secret is replaced by `[REDACTED]` wherever it shows up in a response. A
 call takes at most 30 seconds. If the owner changes the secret's policy
 after you were approved, or revokes the grant, or the grant expires, the
-broker answers 409 (also while a call is out: the response is withheld) and
+broker answers 409 (also while a call is out: the call stops, and nothing of the
+response comes back) and
 you request again.
 
 `warden status` lists the grants on this machine and the broker's view of
@@ -473,8 +474,10 @@ within seconds.
   expire: the target checks them offline. Short windows limit that, so
   revoke as soon as you finish. A login already open continues even after the
   certificate expires, so end your sessions and what they started.
-- **A proxied API call already in flight runs to completion** (at most
-  30 s); only new calls are refused.
+- **A proxied API call already in flight stops**, with none of its response, even if
+  a response had started to arrive (`warden http` exits 4 for a revoke and 5 for
+  expiry). The outcome upstream is unknown: the API may have acted on the call, so
+  find out before you repeat one that changes something.
 
 Every `warden` run also cleans up expired grants and stops their agents, and
 removes temporary files abandoned for over ten minutes by an interrupted
@@ -493,6 +496,7 @@ is reported once on stderr and never stops the command.
 | 5 | `warden ssh` or `warden http` found no active grant (for `warden http`, none that covers the method and path), or the broker said the grant `warden http` used has expired, whose local record is then removed. The message gives the `warden request …` command to run if the task needs it. |
 | 6 | The request was cancelled while `warden request` waited for it (`warden request cancel` from another terminal). |
 | 7 | `warden doctor --strict` found no failure, but could not check everything: see [Checking an agent machine](configuration.md#checking-an-agent-machine). Without `--strict` it exits 0 and lists those items. It exits 1 when a check failed. |
+| 8 | The broker stopped a `warden http` call that was out, because it could not read the grant's state. No response came back, and the API may have acted on the call: find out before repeating one that changes something. The grant stays; if this repeats, tell the owner. |
 | 22 | `warden http --fail` got an upstream status of 400 or more. The body is still written to stdout. |
 | 64 | Wrong arguments: nothing ran. The message on stderr shows the usage. Fix the command and run it again. |
 | 130 | Interrupted with Ctrl-C while `warden request` waited; the pending request was cancelled (or, if the broker did not answer in time or Ctrl-C was pressed again, left to expire). Also Ctrl-C while an approved grant was being installed; the message names the grant to revoke. |
@@ -523,12 +527,12 @@ never try to get around warden by any other route.
   something else. Until this is fixed ([issue #49][i49]), revoke each grant
   as soon as its task ends, and run agents that must not share grants as
   different OS users with different agent keys.
-- **Revoking does not stop a proxied call in flight** ([issue #44][i44]).
+- **Revoking a proxied call in flight cannot undo it.** The call stops, but the API
+  may already have acted on it.
 - **Revoking does not invalidate an issued certificate** on the target
   ([issue #35][i35]).
 
 [i49]: https://github.com/pecheriere/warden/issues/49
-[i44]: https://github.com/pecheriere/warden/issues/44
 [i35]: https://github.com/pecheriere/warden/issues/35
 
 ## Instructions to give an agent
