@@ -171,6 +171,10 @@ enabled ones in priority order in `WARDEN_NOTIFY`.
 4. **Review.** The approval page (HTTPS on the tailnet name) shows goal, kind,
    target, user/secret, destination rules, requested duration, and a duration
    picker (15 m / 30 m / 1 h / 4 h, capped by the target's max).
+   The Pending page lists every pending request, for a notification that was
+   dismissed or missed. Deny works from the list. Approve… there gives the request
+   a new approval token, replacing the stored hash so that only one link is valid,
+   and opens this same page on it (audited as `approval_link_replaced`).
 5. **Approve / deny.** Approve = WebAuthn assertion for a ceremony the server
    began for this request **and the chosen duration**. The challenge is the
    WebAuthn library's own; the binding is the state the server keeps for the
@@ -575,7 +579,8 @@ nor keep it out of the log.
 - **Tailscale identity** as a second check: the approval endpoints accept only
   requests carrying the owner's `Tailscale-User-Login` (set by Serve).
 - Approval tokens: ≥128-bit random, single use, tied to one request, expire
-  with the request.
+  with the request, and stop working when the owner replaces them from the
+  Pending page.
 
 Request submission and proxy/relay use are restricted by the tailnet policy to
 the devices the agents run on, and every API call is authenticated as an
@@ -661,6 +666,29 @@ owner's page. Revoking an API grant refuses its new calls and stops those in
 flight; they are no longer listed once the grant has ended. Times are
 rendered as UTC and shown in the viewer's local time by the script.
 
+### Pending requests and live refresh
+
+The Pending page lists a card per pending request. `warden.js` refreshes it every 5 s
+from `GET /pending/live` (owner only, `Cache-Control: no-store`), under the same rules
+as the grants page: while the page is visible, one request at a time, stopping on a
+401 or 403, and keeping what is shown if a request fails. That route reads the
+database only, so it changes nothing and costs the secret backend nothing. A request
+missing from the answer is marked as ended, and the "in N min" of each card follows the
+answer and the clock.
+
+A refresh must not change what a tap lands on, as Deny has no confirmation (nor does
+the one on the approval page). So a card that ends keeps its place and size, with its
+buttons disabled, and is removed only while the page is hidden or when no live card is
+left, where the server's empty state replaces `main`. A request without a card is
+fetched from `/pending` itself, so all markup comes from the server, and goes at the
+end, with its buttons disabled for its first second. Messages are overlaid at the
+bottom and take the taps on them, and a tap or the Escape key dismisses one. A plain
+"Denied." fades after 8 s; a warning stays. When one goes, the buttons it may have
+covered are disabled for a second too. No refresh moves focus or scrolls. The list says
+so when polling or a refresh fails, or polling has stopped. The empty state polls as well, and what a denial said
+survives onto it. Without script, the page is what the server rendered. No refresh ever
+replaces a token: only pressing Approve… does.
+
 ### Screenshots
 
 The unit test `every_page_renders_self_contained` renders every approval page
@@ -675,10 +703,14 @@ is on screen without scrolling) and land in `<out-dir>/warden-pages/shots`
 outside the repository, as screenshots are never committed.
 
 `scripts/check-grants-live.py <out-dir>` checks the live refresh of the
-grants page the same way: it serves the `grants-live` fixture with a mocked
-`GET /grants/live` and asserts, in headless Chrome on virtual time, that a
-401 or 403 stops polling, that a grant missing from the answer loses its
-card, and that a grant with no card reloads the page exactly once.
+grants and pending pages the same way: it serves their fixtures with mocked
+answers and asserts, in headless Chrome on virtual time, that a 401 or 403
+stops polling, that a grant missing from the answer loses its card, that a
+request missing from it is marked in place, that a grant with no card reloads
+the page exactly once, that a new request appears without a reload, also from
+the empty state, that no live update moves a card, that the list says when it
+stops updating, that the time left follows the answer, that polling posts
+nothing, and that what a denial said stays on screen when the last card goes.
 
 ## 10. Policy: 1Password as the source of truth
 

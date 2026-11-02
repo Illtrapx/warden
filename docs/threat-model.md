@@ -73,7 +73,7 @@ defends against it.
   than the one displayed.** Approval needs a WebAuthn assertion from an
   enrolled passkey. The approval token is at least 128 bits of randomness,
   stored only as a SHA-256 hash, single use, tied to one request and expiring
-  with it. The window cannot exceed what the target allows. An approval is
+  with it. A request has one valid token at a time. The window cannot exceed what the target allows. An approval is
   valid only on the approved target: the certificate's single principal is
   `warden:<target>:<user>`, which only that target's host maps to the account
   (see "Targets trust the CA, per target" below). See "Approval binding"
@@ -145,6 +145,18 @@ what was approved, and a compromised broker could misapply it.
 - The certificate is signed for the exact ephemeral public key in the request.
   One certificate is issued per grant. The grant id is not a bearer credential
   and cannot mint further certificates.
+- **The pending screen goes through all of the above.** `GET /pending` lists the
+  pending requests. Approve… there is `POST /pending/{id}/open`, which gives the
+  request a new token, stores its hash in place of the old one, and returns the
+  link: the same approval page, the same passkey ceremony, bound in the same way.
+  It approves nothing, and no route of the screen does. The old token stops working
+  in that statement. A page open on it ends in the not-pending outcome, a ceremony
+  bound to it is refused before the assertion is checked and does not carry over
+  to the new token, and an approval already past those checks either finishes first
+  or fails on the token in its own update. A request that is no longer pending
+  (decided, cancelled, expired, even before a sweep) gets no new token.
+  `approval_link_replaced` is written before the change, or the change does not
+  happen, and it holds the request id and no token or hash.
 
 ## What the audit log can miss
 
@@ -362,6 +374,42 @@ These were recorded during implementation and are accepted for this release.
   `warden-server agent revoke` run from the command line changes the database,
   but the running server only re-reads it when a long poll wakes, so a waiting
   client can take up to 30 seconds to see the terminal state.
+- **The approval token is not a second factor against the owner's login.** Since
+  the pending screen can issue a new token, holding the owner's login is enough to
+  get one, so only the passkey separates the login from an approval. Whoever has the
+  login, or can [forge it](#deployment-assumptions), still cannot approve anything.
+  They can deny any pending request without learning a link, and replace links.
+  Replacing kills the link in a notification, and also any page the owner has open:
+  by repeating `POST /pending/{id}/open`, they can kill every page the owner opens
+  before the passkey finishes, for the whole life of the request, with an audit entry
+  each time, at the rate they can send requests. They could read the same requests on
+  `/history` already. All of it is on the record.
+
+  Stopping access is not the limit of it. Anyone with browser tools on a machine that
+  holds both the login and a passkey the owner can use, such as a synced passkey, can
+  now get a link from `/pending` and put a real passkey prompt in front of the owner,
+  where before they had to learn a link from a notification first. The prompt is for
+  warden's real origin, so an owner who taps it has approved. No credential is forged,
+  so the broker cannot tell this from the owner. The passkey's user verification is
+  what remains, and it does not help a tired owner. This is why the tailnet policy
+  should give the approval listener only to the owner's phone, and why the owner's
+  passkey and sessions should stay off machines that run agents: a device logged in
+  as the owner that the policy lets through, a workstation running an agent for
+  example, has everything above. See [the owner identity design](design/owner-identity.md).
+  Without that network layer, nothing but the owner's attention stands between an
+  agent with those browser tools and an approval.
+- **Passkey prompts in progress cannot crowd each other out.** A request keeps its
+  4 newest ceremonies, and beginning another drops its oldest, so one request cannot
+  fill the table, and replacing a link drops those of the old one. Enrollment has its
+  own room for 8, each costing a code from the server's command line. Whoever holds
+  the owner's login can still keep cancelling the prompts of a request they keep
+  beginning, as they can by replacing its link, but not those of another request.
+  Approval ceremonies as a whole stop at 1024, with a 429, to bound memory. A request
+  that has ended keeps its ceremonies until they expire, after 120 s, so ended requests
+  count too. With the default limits, reaching this takes the owner's login and about
+  26 agents each spending its 10 new requests within 2 minutes, and fewer agents where
+  the [request limits](configuration.md#request-limits) are raised. It would refuse new
+  approvals for up to 120 s, not enrollment. An agent's own limits are spent doing it.
 - **Cloned authenticators are detected, not prevented.** The broker keeps
   each passkey's signature counter in its own column and raises it with a
   single conditional update, so concurrent approvals can never store an older
