@@ -126,6 +126,9 @@ impl Scrubber {
                     );
                 }
                 ChannelSettings::Ntfy { url, token } => {
+                    // The whole URL and not the topic alone, as for the webhook
+                    // id: a topic can be an ordinary word of the report.
+                    secrets.push(url.as_str());
                     secrets.extend(url.password());
                     secrets.extend(token.as_ref().map(ExposeSecret::expose_secret));
                 }
@@ -187,7 +190,9 @@ pub fn invalid_config_report(error: &ConfigError) -> Report {
     Report {
         title: TITLE.to_owned(),
         checks,
-        effects: "Read the environment only. Sent nothing and wrote nothing.".to_owned(),
+        effects: "Read the environment and the secret files it names only. Sent nothing and \
+                  wrote nothing."
+            .to_owned(),
     }
 }
 
@@ -262,8 +267,9 @@ fn connect_checks(probe: VaultProbe, vault: &str, checks: &mut Vec<Check>) -> bo
             checks.push(Check::fail(
                 TOKEN,
                 format!("Connect refused the token (HTTP {status})."),
-                "Issue a new token with `op connect token create` and update \
-                 WARDEN_OP_CONNECT_TOKEN.",
+                "Issue a new token with `op connect token create`, put it in \
+                 WARDEN_OP_CONNECT_TOKEN or the file WARDEN_OP_CONNECT_TOKEN_FILE names, and \
+                 restart the server.",
             ));
             checks.push(not_checked(VAULT, "Connect refused the token."));
         }

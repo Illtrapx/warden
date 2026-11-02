@@ -27,7 +27,9 @@ const RING_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Doctor's report for this process's environment.
 pub async fn report(send_test_notification: bool) -> Report {
-    match Config::from_env() {
+    // This reads secret files. The binary runs on the multi-thread runtime,
+    // which `block_in_place` needs.
+    match tokio::task::block_in_place(Config::from_env) {
         Err(e) => invalid_config_report(&e),
         Ok(config) => {
             let env = Live::new(&config);

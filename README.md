@@ -114,17 +114,17 @@ dedicated to it. All three are required today. What each part protects:
 
 ### Supported setups
 
-Both setups use Docker and 1Password Connect. They differ in how warden joins
-the tailnet.
+The first two use Docker and differ in how warden joins the tailnet. All three
+use 1Password Connect, which 1Password ships only as a container.
 
 | Setup | State | Access | What it costs in security |
 |-------|-------|--------|---------------------------|
 | **Tailscale Services** on the host | Recommended. The [guide](docs/deployment.md#1-the-recommended-layout) is the main path. | SSH certificates, API calls. No SSH relay. | [The whole host is trusted](docs/deployment.md#who-can-reach-the-listeners). Any local process can reach the listeners and forge your login. That cannot approve anything, but it can read the history, revoke grants and use a stolen bearer key, so the host must run nothing else untrusted. |
 | **Tailscale sidecar** container | [Documented](docs/deployment.md#10-the-sidecar-layout-for-relay-targets), but not yet tested end to end. | SSH certificates, API calls, SSH relay. | Other host processes cannot reach the listeners, but firewall rules can no longer tell warden's traffic from Tailscale's, and hardening the Tailscale container is untested. With relay targets, warden also [reads and uses their credentials](docs/threat-model.md#relay-mode-residual-risks), so a compromised warden can expose them. |
+| **systemd service**, warden outside a container | [Documented](docs/deployment-systemd.md), but not yet tested on a clean host. Needs a release later than 0.8.1 and a build from source. | SSH certificates, API calls. No SSH relay. | As for Tailscale Services, the whole host is trusted. warden also [loses the image's isolation](docs/deployment-systemd.md#1-what-holds-what-is-replaced-what-is-lost): it shares the host's filesystem (read-only) and network stack, and there is no build attestation yet. |
 
 Other setups are planned but **do not exist yet**: a local demo
-([#73](https://github.com/pecheriere/warden/issues/73)), running without
-Docker ([#74](https://github.com/pecheriere/warden/issues/74)), approving
+([#73](https://github.com/pecheriere/warden/issues/73)), approving
 without Tailscale ([#75](https://github.com/pecheriere/warden/issues/75)) and
 secrets without 1Password
 ([#76](https://github.com/pecheriere/warden/issues/76)).

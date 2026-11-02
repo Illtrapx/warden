@@ -259,6 +259,122 @@ async fn a_missing_setting_exits_1_naming_it_without_creating_anything() {
     assert!(!text.contains(TOKEN), "{text}");
 }
 
+/// Writes `content` to `name` in the deployment's directory, for the server's
+/// user only, and returns its path.
+fn secret_file(deployment: &Deployment, name: &str, content: &str) -> String {
+    let file = deployment.path(name);
+    fs::write(&file, content).unwrap();
+    fs::set_permissions(&file, fs::Permissions::from_mode(0o400)).unwrap();
+    file
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn secrets_in_files_work_and_their_content_is_not_printed() {
+    let deployment = Deployment::new().await;
+    deployment.enroll_a_passkey().await;
+    let topic_url = format!("{}/private-topic", deployment.connect.uri());
+    let token_file = secret_file(&deployment, "token", &format!("{TOKEN}\n"));
+    let topic_file = secret_file(&deployment, "topic", &format!("{topic_url}\n"));
+    Mock::given(path("/private-topic"))
+        .respond_with(ResponseTemplate::new(200))
+        .mount(&deployment.connect)
+        .await;
+    let output = deployment
+        .command()
+        .env_remove("WARDEN_OP_CONNECT_TOKEN")
+        .env_remove("WARDEN_NOTIFY_NTFY_URL")
+        .env("WARDEN_OP_CONNECT_TOKEN_FILE", &token_file)
+        .env("WARDEN_NOTIFY_NTFY_URL_FILE", &topic_file)
+        .args(["doctor", "--send-test-notification"])
+        .output()
+        .unwrap();
+    let text = stdout(&output);
+    assert_eq!(output.status.code(), Some(0), "{text}");
+    for check in ["config", "connect.token", "notify.ntfy"] {
+        assert!(line_of(&text, check).starts_with("pass"), "{text}");
+    }
+    let requests = deployment.connect.received_requests().await.unwrap();
+    assert!(
+        requests.iter().any(|r| r
+            .headers
+            .get("authorization")
+            .is_some_and(|value| value.as_bytes() == format!("Bearer {TOKEN}").as_bytes())),
+        "Connect did not receive the token from the file"
+    );
+    let printed = [&output.stdout[..], &output.stderr[..]].concat();
+    let printed = String::from_utf8(printed).unwrap();
+    // Fixed messages: on failure, printing the output would expose the leak.
+    assert!(!printed.contains(TOKEN), "the output contains the token");
+    assert!(
+        !printed.contains(&topic_url),
+        "the output contains the topic URL"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_secret_file_that_cannot_be_used_fails_config_naming_the_variable() {
+    let deployment = Deployment::new().await;
+    let world_readable = secret_file(&deployment, "open", TOKEN);
+    fs::set_permissions(&world_readable, fs::Permissions::from_mode(0o644)).unwrap();
+    let two_lines = secret_file(&deployment, "lines", &format!("{TOKEN}\n{TOKEN}\n"));
+    let missing = deployment.path("missing-token-file");
+    let cases = [
+        (missing.as_str(), "entity not found"),
+        (world_readable.as_str(), "accessible to other users"),
+        (two_lines.as_str(), "single line"),
+    ];
+    for (file, reason) in cases {
+        let output = deployment
+            .command()
+            .env_remove("WARDEN_OP_CONNECT_TOKEN")
+            .env("WARDEN_OP_CONNECT_TOKEN_FILE", file)
+            .arg("doctor")
+            .output()
+            .unwrap();
+        let text = stdout(&output);
+        assert_eq!(output.status.code(), Some(1), "{text}");
+        let line = line_of(&text, "config");
+        assert!(line.starts_with("FAIL"), "{text}");
+        assert!(line.contains("WARDEN_OP_CONNECT_TOKEN_FILE"), "{text}");
+        assert!(line.contains(reason), "{text}");
+        assert!(
+            line_of(&text, "connect").starts_with("COULD NOT CHECK"),
+            "{text}"
+        );
+        assert!(
+            !text.contains(TOKEN),
+            "the report contains the file's content"
+        );
+        assert!(text.contains("the secret files"), "{text}");
+    }
+    assert_eq!(
+        deployment.connect.received_requests().await.unwrap().len(),
+        0
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn a_token_refused_from_a_file_names_the_file_variable() {
+    let deployment = Deployment::new().await;
+    deployment.connect.reset().await;
+    Mock::given(path("/v1/vaults"))
+        .respond_with(ResponseTemplate::new(401).set_body_string(TOKEN))
+        .mount(&deployment.connect)
+        .await;
+    let token_file = secret_file(&deployment, "token", TOKEN);
+    let output = deployment
+        .command()
+        .env_remove("WARDEN_OP_CONNECT_TOKEN")
+        .env("WARDEN_OP_CONNECT_TOKEN_FILE", &token_file)
+        .arg("doctor")
+        .output()
+        .unwrap();
+    let text = stdout(&output);
+    assert_eq!(output.status.code(), Some(1), "{text}");
+    assert!(text.contains("WARDEN_OP_CONNECT_TOKEN_FILE"), "{text}");
+    assert!(!text.contains(TOKEN), "the report contains the token");
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn a_refused_token_fails_and_is_not_printed() {
     let deployment = Deployment::new().await;

@@ -41,6 +41,7 @@ Commit messages and PR descriptions carry no AI attribution lines
 | `crates/broker/src/testkit` | test helpers (throwaway `sshd`, fixtures), behind the `testkit` feature |
 | `crates/cli` | `warden-broker-cli`, the `warden` command agents run |
 | `docs/` | user and design documentation |
+| `deploy/systemd` | the systemd unit that `docs/deployment-systemd.md` installs |
 | `scripts/` | CI guards and UI check tools (each script documents its usage) |
 
 ## Before you push

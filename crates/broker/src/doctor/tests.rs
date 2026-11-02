@@ -525,7 +525,7 @@ async fn tailscale_is_never_inferred_from_inside_the_container() {
 
 #[tokio::test]
 async fn no_configured_secret_survives_into_the_report() {
-    let echo = format!("echoed {TOKEN} {WEBHOOK_ID} {NTFY_TOKEN}");
+    let echo = format!("echoed {TOKEN} {WEBHOOK_ID} {NTFY_TOKEN} https://ntfy.example/topic");
     let fake = Fake {
         vault: VaultProbe::Found,
         ca: CaProbe::Invalid(echo.clone()),
@@ -534,7 +534,7 @@ async fn no_configured_secret_survives_into_the_report() {
         ..Fake::healthy()
     };
     let text = examine(&config(&[]), &fake, false).await.render(false);
-    for secret in [TOKEN, WEBHOOK_ID, NTFY_TOKEN] {
+    for secret in [TOKEN, WEBHOOK_ID, NTFY_TOKEN, "https://ntfy.example/topic"] {
         assert!(!text.contains(secret), "{text}");
     }
     assert!(text.contains("[REDACTED]"), "{text}");
