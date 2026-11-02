@@ -8,6 +8,13 @@ All notable changes to this project are recorded here. The format follows
 
 ### Added
 
+- `warden-server doctor` and `warden doctor` check a setup and report each
+  check as pass, fail or could-not-check, with what to do. They exit 1 when a
+  check failed and otherwise 0, and the summary lists what could not be checked
+  and how to check it by hand. With `--strict` those items make them exit 7.
+  They are read-only: only `warden-server doctor
+  --send-test-notification` sends anything, one message through each channel
+  to the owner's phone.
 - Releases attach `warden` CLI binaries for macOS arm64, Linux amd64 and
   Linux arm64, so the CLI installs without Rust. The Linux binaries are
   fully static. Each `.tar.gz` has a build-provenance attestation to check
