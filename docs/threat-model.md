@@ -147,6 +147,91 @@ what was approved, and a compromised broker could misapply it.
   One certificate is issued per grant. The grant id is not a bearer credential
   and cannot mint further certificates.
 
+## What the audit log can miss
+
+The audit log is the evidence warden leaves, so an action that gives access
+must not happen without its entry. An action that ends access is the exception:
+stopping access matters more than recording it. Either way, the log is never
+written while a database write is open, so writing it cannot hold up another
+change.
+
+- **Written first, or the action does not happen.** Creating a request, approving
+  one, adding an agent or changing its key, enrolling or removing a passkey and
+  making an enrollment code write their entries before they touch the database. A
+  proxied call and a relay session write theirs before anything reaches the target,
+  and then check the grant again. If the entry cannot be written, the action does
+  not happen and the caller gets an error. A bearer agent's row is written first and
+  revoked if its entry cannot be written; its key is shown only after that entry, so
+  the row cannot be used.
+- **Ending access does not wait for the log (deliberate).** A failing log must not
+  leave an owner unable to end access they have decided to end, and a compromise is
+  when both are most likely to matter. So revoking, denying, cancelling and expiring
+  store their entries in the database, in the transaction that makes the change, and
+  only then write them to the log, waiting 2 s at most.
+  - Access stops as usual. A revoked grant or agent is revoked in the database,
+    pending requests of a revoked agent end, relay sessions close, and proxied calls
+    and the agent's key are refused. A call or session waiting to record its start
+    checks the grant again once it has, and does not go out. One already sent runs
+    on (issue [#44](https://github.com/pecheriere/warden/issues/44)), and a
+    certificate already issued stays valid until it expires, as for any revocation.
+  - The entry is not lost. It waits in the database, and every sweep (each 15 s, and
+    at start) tries again, so it reaches the log once the log works, with a note
+    holding the entry if it is over a minute late, because its own time is when it was
+    written. Until then
+    it has no hash chain, and whoever controls the host could remove it. Writers
+    claim an entry first, so two processes do not both write it, though entries
+    can then reach the log out of order. A crash just after writing one can write it
+    twice, and its claim holds it back for up to 5 minutes.
+  - The owner sees it. The grants page warns for as long as any entry is waiting,
+    whatever the page reloads for. A revocation also sends a notification, with the
+    grant id or agent name, because an agent can revoke its own grant with no owner
+    there. The server log has an error with the entries at each attempt.
+    `warden-server agent revoke` has no server log, so it prints the entries and exits
+    with an error, after revoking. `warden-server doctor` fails while entries wait,
+    and `warden-server audit verify` warns.
+  - What can still stop a revocation is the database: if it cannot commit, the
+    revocation did not happen and the caller gets an error. Other writers hold it only
+    briefly, as none of them writes the log meanwhile; a revocation queues behind them,
+    for 5 s at most. The relay ends its sessions by itself if it cannot read the
+    database for 10 s (see "Fail closed when state cannot be read").
+  - Entries of these changes are written just after the commit, so a session that a
+    revocation ends can log its end before the revocation's entry.
+- **`cert_issued` fails closed.** A certificate cannot be revoked before it
+  expires, so one with no entry would be access with no evidence and no way to
+  take it back. `cert_issued` is therefore written with `approved`, before the
+  database changes. The certificate is signed in memory and reaches the agent only through
+  the grant that commit stores, so if either entry cannot be written, it is
+  dropped without having left the broker. The owner, who is looking at the
+  approval page, sees that nothing changed and no access was given, and can
+  approve again, which signs a new certificate. The agent is not told: its
+  request is still `pending`, which is true, and ends in a decision or `expired`
+  as usual, also if the log is still failing by then.
+- **Entries written first can overstate, not understate.** A change that then fails,
+  or finds that its agent was revoked meanwhile, leaves an entry for something that
+  did not happen; an `error` entry then says so. A crash at that moment, or a failure
+  to write the `error` entry too, leaves none: an `approved` with no matching grant in
+  the database means the approval did not take effect, and no certificate left the
+  broker.
+- **Written after the fact, and only logged if that fails.** `request_limited`,
+  `limit_notified`, `notified`,
+  `relay_session_ended`, `relay_session_refused` and `relay_login_refused`
+  record something that already happened and gave no new access, so nothing can
+  be refused any more. The server log has an error when one is lost. A session's
+  end is also missing after a crash; its `relay_session_started` is still there.
+- **Not recorded at all.** Attempts that change nothing are not in the audit log:
+  a failed passkey assertion (a counter regression is recorded), a wrong
+  enrollment code, a call on a grant that is revoked or expired, a signed request
+  that fails verification. They come from callers who passed the checks in front
+  of those endpoints, and some are in the server log. An enrollment code that is
+  spent but never finishes enrolling is not recorded either; only `passkey_enrolled`
+  shows that it was used. An `enrollment_code_created` entry holds neither the
+  code nor its hash, so it cannot be matched to one enrollment.
+- **A log that cannot be written stops what gives access.** With a full disk, or
+  after a failed write (which needs a restart to repair), no request can be created
+  or approved, and relay sessions and proxied calls cannot start. A log that stalls
+  holds those up until it answers. Ending access goes on as above. Watch
+  the disk that holds the log.
+
 ## Authentication of callers
 
 - Every endpoint on both listeners requires the `Tailscale-User-Login` header
@@ -347,9 +432,6 @@ These were recorded during implementation and are accepted for this release.
 - **Certificate logins are not audited.** They go straight to the target. warden
   records the approval and the certificate, and the target's `sshd` logs the login
   with the certificate's key id. Ship those logs if you need that trail.
-- **A certificate's `cert_issued` entry can be missing.** The approval is committed
-  and audited first. If writing the entry for the certificate then fails, this is
-  logged and the grant stands. The `approved` entry still names the grant.
 - **Connect and notifiers can be configured over plain HTTP.** warden does not
   require `https` for `WARDEN_OP_CONNECT_URL` or the notifier URLs, because Connect
   on its own network and a local Home Assistant commonly use `http`. On a network

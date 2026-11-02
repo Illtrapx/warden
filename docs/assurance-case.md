@@ -40,7 +40,7 @@ its guarantees hold only under the
 | R4 | The agent never receives a reusable secret: no CA key, API secret or relay credential. It keeps only its own identity key, which can ask and use active grants, and [can be copied](security-assessment.md#ranked-risks) unless held in hardware. | Grant types in [`proto/src/lib.rs`](../crates/proto/src/lib.rs) carry no secret field. [`proxy/client.rs`](../crates/broker/src/proxy/client.rs) adds the secret itself and [`proxy/redact.rs`](../crates/broker/src/proxy/redact.rs) redacts answers. |
 | R5 | A secret reaches only the place the owner configured. | Exact origin match in `check_url` ([`proxy/rules.rs`](../crates/broker/src/proxy/rules.rs)); no redirects and no proxy in `client_for` ([`proxy/client.rs`](../crates/broker/src/proxy/client.rs)); pinned host keys in `check_server_key` ([`relay/onward.rs`](../crates/broker/src/relay/onward.rs)). |
 | R6 | Secrets are not logged, audited, sent to notifiers or put in errors. | `Debug` of secret types prints `<redacted>` ([`policy/mod.rs`](../crates/broker/src/policy/mod.rs), [`agents.rs`](../crates/broker/src/agents.rs), [`config.rs`](../crates/broker/src/config.rs)); fixed upstream errors in `ProxyError` ([`proxy/client.rs`](../crates/broker/src/proxy/client.rs)); the `Scrubber` in [`doctor/mod.rs`](../crates/broker/src/doctor/mod.rs). |
-| R7 | Every request, decision and grant is recorded, and every use that passes through warden: relay sessions and proxied calls. A change to the record can be detected unless the whole file is rewritten. **warden does not see certificate logins** (B9 below): it records the issue, and only the target's `sshd` logs the login. | [`audit.rs`](../crates/broker/src/audit.rs) (hash chain), `audit_and_commit` in [`requests.rs`](../crates/broker/src/requests.rs). Exceptions: findings [F4, F5 and F15](security-assessment.md#findings-of-this-review). |
+| R7 | Every request, decision and grant is recorded, and every use that passes through warden: relay sessions and proxied calls. A change to the record can be detected unless the whole file is rewritten. **warden does not see certificate logins** (B9 below): it records the issue, and only the target's `sshd` logs the login. | [`audit.rs`](../crates/broker/src/audit.rs) (hash chain), `record` in [`requests/transition.rs`](../crates/broker/src/requests/transition.rs). Exceptions: finding [F15](security-assessment.md#findings-of-this-review), and revocation, which [does not wait for the log](threat-model.md#what-the-audit-log-can-miss) ([`requests/revocation.rs`](../crates/broker/src/requests/revocation.rs)). |
 | R8 | When state cannot be read, warden refuses. | Fail-closed paths are listed under [Fail-safe defaults](#3-secure-design-principles). |
 | R9 | An agent always gets an explicit outcome. | `RequestStatus` in [`proto/src/lib.rs`](../crates/proto/src/lib.rs). |
 | R10 | The demo cannot reach a real deployment. | [`scripts/check-demo-not-shipped.sh`](../scripts/check-demo-not-shipped.sh), run in CI, also against the built image. |
@@ -151,9 +151,12 @@ Also:
   reaching the listeners.
 - **Defence in depth.** Redaction backs up the destination rules, and passkey
   approval backs up the tailnet policy. Neither is treated as enough on its own.
-- **Audit before action.** For proxied calls and relay sessions the record is
-  written first. Other state changes commit only after the audit entry is written
-  (`audit_and_commit` in [`requests.rs`](../crates/broker/src/requests.rs)).
+- **Audit before action.** For proxied calls, relay sessions and changes that give
+  access, the entry is written first, before any database write (`record` in
+  [`requests/transition.rs`](../crates/broker/src/requests/transition.rs)). A change
+  that ends access [does not wait for the log](threat-model.md#what-the-audit-log-can-miss):
+  its entry is stored with it and written after
+  ([`requests/revocation.rs`](../crates/broker/src/requests/revocation.rs)).
 
 ## 4. Input validation
 

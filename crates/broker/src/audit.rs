@@ -20,6 +20,12 @@ use sha2::{Digest, Sha256};
 use tokio::sync::Mutex;
 use warden_broker_proto::{AgentName, Fingerprint, Id, TargetName, UnixUser};
 
+#[cfg(feature = "testkit")]
+mod stall;
+
+#[cfg(feature = "testkit")]
+pub use self::stall::AppendStall;
+
 /// `prev` of the first line in a log.
 const GENESIS: &str = "0000000000000000000000000000000000000000000000000000000000000000";
 
@@ -100,7 +106,9 @@ pub enum AuditEvent {
         /// Request id.
         id: Id,
     },
-    /// A certificate was issued.
+    /// A certificate was issued. Written with the approval, before anything
+    /// is committed: the certificate is not given out if this entry cannot
+    /// be written.
     CertIssued {
         /// Grant id.
         grant_id: Id,
@@ -209,6 +217,12 @@ pub enum AuditEvent {
     AgentRevoked {
         /// Agent name.
         agent: AgentName,
+    },
+    /// A one-time passkey enrollment code was made on the host. Neither the
+    /// code nor its hash is recorded.
+    EnrollmentCodeCreated {
+        /// When the code stops working, unix seconds.
+        expires_at: i64,
     },
     /// A passkey was enrolled.
     PasskeyEnrolled {
@@ -666,6 +680,8 @@ struct State {
 /// position from the file if someone else wrote since.
 pub struct AuditLog {
     state: Arc<Mutex<State>>,
+    #[cfg(feature = "testkit")]
+    stall: Arc<stall::Gate>,
 }
 
 fn join_error(e: tokio::task::JoinError) -> AuditError {
@@ -680,6 +696,8 @@ impl AuditLog {
                 head,
                 poisoned: false,
             })),
+            #[cfg(feature = "testkit")]
+            stall: Arc::default(),
         }
     }
 
@@ -702,6 +720,14 @@ impl AuditLog {
         Ok(Self::from_parts(file, head))
     }
 
+    /// Hold every append whose entry `filter` picks, with no time limit, until the
+    /// result is dropped.
+    #[cfg(feature = "testkit")]
+    #[must_use]
+    pub fn stall_appends(&self, filter: fn(&AuditEvent) -> bool) -> AppendStall {
+        self.stall.hold(filter)
+    }
+
     /// Append `event`, fsyncing before returning.
     ///
     /// Cancel-safe: the write runs on a blocking thread that owns this
@@ -713,6 +739,8 @@ impl AuditLog {
     /// ([`AuditError::LockTimeout`]) or the line cannot be written durably;
     /// after a failed write or fsync the log is poisoned.
     pub async fn append(&self, event: AuditEvent) -> Result<(), AuditError> {
+        #[cfg(feature = "testkit")]
+        self.stall.pass(&event).await;
         let mut state = Arc::clone(&self.state).lock_owned().await;
         if state.poisoned {
             return Err(AuditError::Poisoned);

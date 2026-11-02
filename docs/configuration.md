@@ -121,7 +121,7 @@ there.
 | `agent add <name> --public-key '<line>'` | Creates a key-signed agent, with the public key line of its signing key (`ssh-ed25519` or `ecdsa-sha2-nistp256`). No bearer key is made. On stderr, the `warden login` command for the agent's machine, with `--server <url>` as above (`https`, or `http` on loopback; the root of the origin) and the audience from `WARDEN_AUDIENCE_PATH` once the server has created it. | same, and `WARDEN_AUDIENCE_PATH` (optional) |
 | `agent set-key <name> '<line>'` | Switches an agent to key-signed requests, or replaces its signing key. Its bearer key or previous key stops working at once. | same as `agent add <name>` |
 | `agent list` | Lists agents: name, creation time, `active` or `revoked@<time>`, `bearer` or `ssh-key`, and the key's `SHA256:` fingerprint (`-` for a bearer key). | `WARDEN_DB_PATH` |
-| `agent revoke <name>` | Disables the agent, ends its pending requests and grants, and ends its relay sessions. A running server notices within about 30 seconds for waiting clients and within seconds for relay sessions. | `WARDEN_DB_PATH`, `WARDEN_AUDIT_PATH` |
+| `agent revoke <name>` | Disables the agent, ends its pending requests and grants, and ends its relay sessions. A running server notices within about 30 seconds for waiting clients and within seconds for relay sessions. It revokes even if the audit log cannot be used, then prints the entries that could not be written and exits with an error; a running server writes them once the log works. | `WARDEN_DB_PATH`, `WARDEN_AUDIT_PATH` |
 | `audit verify` | Checks the audit log's hash chain and prints the number of entries. | `WARDEN_AUDIT_PATH` |
 | `healthcheck` | Requests `/healthz` on `WARDEN_API_LISTEN` (loopback when it is `0.0.0.0`); exits 0 when healthy, 1 otherwise. For container health checks. | `WARDEN_API_LISTEN` (optional) |
 
@@ -168,6 +168,7 @@ deployment exits 7 with `--strict`.
 | `notify.<channel>` | With the flag: the channel accepts the message. | Never. |
 | `notify.delivery` | Never. | With the flag: warden sees that a channel accepted the message, not that it reached the phone. Confirm that it did. |
 | `passkey` | At least one passkey is enrolled. | The database exists but cannot be read. |
+| `audit.waiting` | No audit log entries are waiting in the database. They wait there when the log could not take them; a running server writes them once it can. | The database exists but cannot be read. |
 | `listener.api`, `listener.approval`, `listener.relay` | A process accepts TCP connections on the address, and the address is not `0.0.0.0` or `::`. This does not prove the process is warden. The relay is checked only when it is on. | The connection neither succeeds nor is refused. |
 | `data.directory` | The database's directory belongs to doctor's user, with no group or other permissions (0700). | The path cannot be read. |
 | `data.database`, `data.audit-log`, `data.audience` | Each is a regular file (not a symbolic link) of doctor's user, not writable by group or others. | The path cannot be read. |
@@ -187,8 +188,8 @@ What doctor does and does not do:
   fallback shows up. The message says it is a test.
 - **It writes nothing to the audit log, even with the flag.** The commands that
   change an agent or a passkey (`agent add`, `agent set-key`, `agent revoke`,
-  `passkey remove`) are audited, as is enrolling a passkey; `enroll` itself, which
-  only makes a code, is not. Those that only read (`agent list`, `passkey list`,
+  `passkey remove`) are audited, as are enrolling a passkey and `enroll`, which makes
+  a code. Those that only read (`agent list`, `passkey list`,
   `audit verify`) are not. Doctor is one of those: a test message changes no
   state and decides no access, and doctor has to work when the audit log is
   what is broken.

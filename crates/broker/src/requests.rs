@@ -2,10 +2,11 @@
 //! long-poll status, decisions, expiry and revocation.
 //!
 //! Every state change runs to completion on its own task (dropping the caller
-//! cannot interrupt it) in one `BEGIN IMMEDIATE` transaction whose audit
-//! entry is appended before the commit, so the audit trail never misses a
-//! transition (a failed commit can at worst leave an entry for a change that
-//! did not happen). After the commit the affected request ids are published
+//! cannot interrupt it) in one `BEGIN IMMEDIATE` transaction. The log is never
+//! written inside that transaction. A change that gives access has its entry
+//! written first, so the audit trail never misses it (a change that then fails
+//! leaves an entry and a note that it did not happen); one that ends access does
+//! not wait for the log, see [`revocation`]. After the commit the affected request ids are published
 //! on the [`StatusBus`] so long-polls wake up, and relay sessions of revoked
 //! grants are ended.
 
@@ -16,7 +17,7 @@ use base64::Engine as _;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
 use sha2::{Digest as _, Sha256};
 use sqlx::sqlite::SqliteRow;
-use sqlx::{Row as _, Sqlite, SqliteConnection, SqlitePool, Transaction};
+use sqlx::{Row as _, SqliteConnection, SqlitePool};
 use url::Url;
 use warden_broker_proto::{
     Access, AgentName, CreateRequest, CreatedResponse, Fingerprint, GrantAccess, GrantView, Id,
@@ -28,6 +29,15 @@ use crate::audit::{AuditError, AuditEvent, AuditLog};
 use crate::notify::{Doorbell, Notifier, doorbell};
 use crate::policy::{ApiSecretPolicy, PolicyError, SecretBackend, SshMode, SshTarget};
 use crate::relay::{LiveSessions, RelayEndpoint};
+use crate::ssh_ca;
+
+pub mod revocation;
+mod transition;
+
+use self::revocation::commit_with_entries;
+pub use self::revocation::{AuditOutcome, EntriesWritten, unwritten_entries, write_entries};
+use self::transition::detached;
+pub(crate) use self::transition::{begin, note_if_not_applied, record};
 
 mod bus;
 mod limits;
@@ -142,7 +152,7 @@ pub enum RequestError {
     /// The database failed.
     #[error("database error: {0}")]
     Db(#[from] sqlx::Error),
-    /// The audit log could not record the transition.
+    /// The audit log could not record the transition, so it did not happen.
     #[error(transparent)]
     Audit(#[from] AuditError),
     /// Stored data could not be encoded or decoded.
@@ -354,6 +364,12 @@ pub struct Requests {
     relay: Option<Arc<RelayEndpoint>>,
     /// Live relay sessions, ended when their grant is revoked.
     sessions: Arc<LiveSessions>,
+    /// Held while writing the waiting audit entries to the log.
+    entry_writer: Arc<tokio::sync::Mutex<()>>,
+    /// Held from checking a change that gives access until it is applied. Its entry
+    /// is written in between, outside any transaction, and without this two racing
+    /// changes would both pass the check and both be recorded.
+    recorded_change: Arc<tokio::sync::Mutex<()>>,
     /// How many requests each agent may make.
     limits: RequestLimits,
     /// What has been recorded and told about refusals under `limits`.
@@ -392,6 +408,8 @@ impl Requests {
             clock,
             relay: relay.map(Arc::new),
             sessions: LiveSessions::new(),
+            entry_writer: Arc::default(),
+            recorded_change: Arc::default(),
             limits: RequestLimits::default(),
             refusals: Arc::default(),
         }
@@ -516,6 +534,19 @@ impl Requests {
         for _ in 0..INSERT_ATTEMPTS {
             // A stale pending row past its expiry must not hold the slot.
             self.expire_due(Scope::Dedupe(dedupe_key.clone())).await?;
+            let change = Arc::clone(&self.recorded_change).lock_owned().await;
+            // Checked here so a request that stores nothing writes nothing; the
+            // transaction that stores one checks again.
+            if let Access::Ssh {
+                target, public_key, ..
+            } = &req.access
+            {
+                let mut conn = self.pool.acquire().await?;
+                check_key_unbound(&mut conn, agent, target, public_key, self.clock.now()).await?;
+            }
+            if let Some(existing) = self.pending_in_slot(&dedupe_key).await? {
+                return Ok(existing);
+            }
             let token = approval_token()?;
             let link = self.approval_link(&token)?;
             // Insert and ring as one detached unit: a caller dropped while the
@@ -530,6 +561,7 @@ impl Requests {
                 );
                 detached(async move {
                     let created = this.insert(&agent, &req, &subject, &key, &token).await;
+                    drop(change);
                     if let Err(RequestError::Limited(refusal)) = &created {
                         this.record_refusal(&agent, *refusal).await;
                     }
@@ -563,53 +595,68 @@ impl Requests {
     ) -> Result<CreatedResponse, RequestError> {
         let id = Id::random();
         let fp = fingerprint(agent, req);
-        let mut tx = begin(&self.pool).await?;
-        // Read after the write lock: a create that queued for it must see the
-        // requests made meanwhile as earlier than itself, or the limits miss them.
-        let now = self.clock.now();
-        if let Access::Ssh {
-            target, public_key, ..
-        } = &req.access
-        {
-            // In the write transaction, so no concurrent create can bind the
-            // key between this check and the insert.
-            check_key_unbound(&mut tx, agent, target, public_key, now).await?;
-        }
-        // Also in the write transaction, so concurrent creates are counted.
-        limits::check(&mut tx, &self.limits, agent, dedupe_key, now).await?;
-        let inserted = sqlx::query(
-            "INSERT INTO requests (id, agent, fingerprint, dedupe_key, body, \
-             approval_token_hash, status, created_at, expires_at) \
-             SELECT ?, ?, ?, ?, ?, ?, 'pending', ?, ? \
-             WHERE EXISTS (SELECT 1 FROM agents WHERE name = ? AND revoked_at IS NULL)",
-        )
-        .bind(id.as_str())
-        .bind(agent.as_str())
-        .bind(fp.as_str())
-        .bind(dedupe_key)
-        .bind(serde_json::to_string(req)?)
-        .bind(sha256_hex(token))
-        .bind(now)
-        .bind(now + PENDING_TTL_SECS)
-        .bind(agent.as_str())
-        .execute(&mut *tx)
-        .await?;
-        if inserted.rows_affected() == 0 {
+        let body = serde_json::to_string(req)?;
+        let active = sqlx::query("SELECT 1 FROM agents WHERE name = ? AND revoked_at IS NULL")
+            .bind(agent.as_str())
+            .fetch_optional(&self.pool)
+            .await?;
+        if active.is_none() {
             return Err(RequestError::AgentRevoked);
         }
+        // Checked here so a refused request writes nothing; the transaction that
+        // stores one checks again.
+        let mut conn = self.pool.acquire().await?;
+        limits::check(&mut conn, &self.limits, agent, dedupe_key, self.clock.now()).await?;
+        drop(conn);
         let created = AuditEvent::RequestCreated {
             id: id.clone(),
             agent: agent.clone(),
             fingerprint: fp.clone(),
             summary: format!("{subject} for {}: {}", window_label(req.window), req.goal),
         };
-        audit_and_commit(
-            &self.audit,
-            tx,
-            vec![created],
-            &format!("creation of request {id}"),
-        )
-        .await?;
+        let transition = format!("creation of request {id}");
+        record(&self.audit, vec![created], &transition).await?;
+        let applied = async {
+            let mut tx = begin(&self.pool).await?;
+            // Read after the write lock: a create that queued for it must see the
+            // requests made meanwhile as earlier than itself, or the limits miss them.
+            let now = self.clock.now();
+            if let Access::Ssh {
+                target, public_key, ..
+            } = &req.access
+            {
+                // In the write transaction, so no concurrent create can bind the
+                // key between this check and the insert.
+                check_key_unbound(&mut tx, agent, target, public_key, now).await?;
+            }
+            // Also in the write transaction, so concurrent creates are counted.
+            limits::check(&mut tx, &self.limits, agent, dedupe_key, now).await?;
+            let inserted = sqlx::query(
+                "INSERT INTO requests (id, agent, fingerprint, dedupe_key, body, \
+                 approval_token_hash, status, created_at, expires_at) \
+                 SELECT ?, ?, ?, ?, ?, ?, 'pending', ?, ? \
+                 WHERE EXISTS (SELECT 1 FROM agents WHERE name = ? AND revoked_at IS NULL)",
+            )
+            .bind(id.as_str())
+            .bind(agent.as_str())
+            .bind(fp.as_str())
+            .bind(dedupe_key)
+            .bind(&body)
+            .bind(sha256_hex(token))
+            .bind(now)
+            .bind(now + PENDING_TTL_SECS)
+            .bind(agent.as_str())
+            .execute(&mut *tx)
+            .await?;
+            if inserted.rows_affected() == 0 {
+                return Err(RequestError::AgentRevoked);
+            }
+            tx.commit().await?;
+            Ok(())
+        }
+        .await;
+        note_if_not_applied(&self.audit, &applied, &transition).await;
+        applied?;
         Ok(CreatedResponse {
             id,
             fingerprint: fp,
@@ -680,13 +727,14 @@ impl Requests {
         channel: String,
         reason: String,
     ) -> Result<(), RequestError> {
+        let now = self.clock.now();
         let mut tx = begin(&self.pool).await?;
         sqlx::query(
             "UPDATE requests SET status = 'error', error = ?, decided_at = ? \
              WHERE id = ? AND status = 'pending'",
         )
         .bind(format!("could not notify the owner: {reason}"))
-        .bind(self.clock.now())
+        .bind(now)
         .bind(id.as_str())
         .execute(&mut *tx)
         .await?;
@@ -695,13 +743,9 @@ impl Requests {
             channel,
             reason,
         };
-        audit_and_commit(
-            &self.audit,
-            tx,
-            vec![failed],
-            &format!("notification failure of request {id}"),
-        )
-        .await
+        commit_with_entries(tx, vec![failed], now).await?;
+        self.settle_entries().await;
+        Ok(())
     }
 
     /// The state of `agent`'s request `id`. While it is pending and `wait`
@@ -791,18 +835,19 @@ impl Requests {
         })
     }
 
-    /// Deny the pending request behind `token`.
+    /// Deny the pending request behind `token`, whatever state the audit log is
+    /// in; [`AuditOutcome::Missing`] says it is not on record yet.
     ///
     /// # Errors
     /// [`RequestError::NotFound`] for an unknown token,
     /// [`RequestError::AlreadyDecided`] if it is no longer pending.
-    pub async fn deny(&self, token: &str) -> Result<(), RequestError> {
+    pub async fn deny(&self, token: &str) -> Result<AuditOutcome, RequestError> {
         let this = self.clone();
         let token = token.to_owned();
         detached(async move { this.deny_now(&token).await }).await
     }
 
-    async fn deny_now(&self, token: &str) -> Result<(), RequestError> {
+    async fn deny_now(&self, token: &str) -> Result<AuditOutcome, RequestError> {
         let hash = sha256_hex(token);
         let now = self.clock.now();
         let mut tx = begin(&self.pool).await?;
@@ -821,15 +866,10 @@ impl Requests {
         };
         let id: Id = parse(&row, "id")?;
         let denied = AuditEvent::Denied { id: id.clone() };
-        audit_and_commit(
-            &self.audit,
-            tx,
-            vec![denied],
-            &format!("denial of request {id}"),
-        )
-        .await?;
+        commit_with_entries(tx, vec![denied], now).await?;
+        let outcome = self.settle_entries().await;
         self.bus.publish(&id);
-        Ok(())
+        Ok(outcome)
     }
 
     /// Withdraw `agent`'s own pending request `id`. The request becomes
@@ -871,13 +911,8 @@ impl Requests {
             id: id.clone(),
             agent: agent.clone(),
         };
-        audit_and_commit(
-            &self.audit,
-            tx,
-            vec![event],
-            &format!("cancellation of request {id}"),
-        )
-        .await?;
+        commit_with_entries(tx, vec![event], now).await?;
+        self.settle_entries().await;
         self.bus.publish(id);
         Ok(())
     }
@@ -898,13 +933,17 @@ impl Requests {
     }
 
     /// Approve the pending request behind `token` with `grant`, atomically:
-    /// either the request flips to approved and the grant is stored, or
-    /// nothing changes.
+    /// either the request flips to approved, the grant is stored and both
+    /// are audited (with `cert_issued` for a grant holding a certificate), or
+    /// nothing changes and the request stays pending. A grant's certificate
+    /// reaches the agent only through the stored grant, so a certificate that
+    /// could not be audited never leaves the broker.
     ///
     /// # Errors
     /// [`RequestError::NotFound`] for an unknown token;
     /// [`RequestError::AlreadyDecided`] if the request is no longer pending,
-    /// has expired or its agent was revoked.
+    /// has expired or its agent was revoked; [`RequestError::Audit`] if an
+    /// entry could not be written.
     pub async fn mark_approved(
         &self,
         token: &str,
@@ -938,50 +977,76 @@ impl Requests {
                 "grant validity does not match the window",
             ));
         }
-        let mut tx = begin(&self.pool).await?;
+        let _change = self.recorded_change.lock().await;
+        // Checked here so an approval that cannot apply writes nothing; the
+        // update below checks again.
         let Some(row) = sqlx::query(
-            "UPDATE requests SET status = 'approved', decided_at = ?1 \
-             WHERE approval_token_hash = ?2 AND status = 'pending' AND expires_at > ?1 \
+            "SELECT id, agent FROM requests \
+             WHERE approval_token_hash = ?1 AND status = 'pending' AND expires_at > ?2 \
              AND EXISTS (SELECT 1 FROM agents \
-                         WHERE agents.name = requests.agent AND agents.revoked_at IS NULL) \
-             RETURNING id, agent",
+                         WHERE agents.name = requests.agent AND agents.revoked_at IS NULL)",
         )
-        .bind(now)
         .bind(&hash)
-        .fetch_optional(&mut *tx)
+        .bind(now)
+        .fetch_optional(&self.pool)
         .await?
         else {
-            drop(tx);
             return Err(self.not_pending(&hash).await);
         };
         let id: Id = parse(&row, "id")?;
-        let agent: String = row.try_get("agent")?;
-        sqlx::query(
-            "INSERT INTO grants (id, request_id, agent, window_secs, not_before, not_after, view) \
-             VALUES (?, ?, ?, ?, ?, ?, ?)",
-        )
-        .bind(grant.grant_id.as_str())
-        .bind(id.as_str())
-        .bind(agent)
-        .bind(window_secs)
-        .bind(grant.not_before)
-        .bind(grant.not_after)
-        .bind(serde_json::to_string(&grant)?)
-        .execute(&mut *tx)
-        .await?;
-        let approved = AuditEvent::Approved {
+        let agent: AgentName = parse(&row, "agent")?;
+        let view = serde_json::to_string(&grant)?;
+        let mut events = vec![AuditEvent::Approved {
             id: id.clone(),
-            grant_id: grant.grant_id,
+            grant_id: grant.grant_id.clone(),
             window_secs,
             passkey_id: passkey_id.to_owned(),
-        };
-        audit_and_commit(
-            &self.audit,
-            tx,
-            vec![approved],
-            &format!("approval of request {id}"),
-        )
-        .await?;
+        }];
+        if matches!(grant.access, GrantAccess::Ssh(_)) {
+            events.push(AuditEvent::CertIssued {
+                key_id: ssh_ca::key_id(&agent, &grant.grant_id),
+                grant_id: grant.grant_id.clone(),
+                not_after: grant.not_after,
+            });
+        }
+        let transition = format!("approval of request {id}");
+        record(&self.audit, events, &transition).await?;
+        let applied = async {
+            let mut tx = begin(&self.pool).await?;
+            // The time again: writing the log may have taken long.
+            let approved = sqlx::query(
+                "UPDATE requests SET status = 'approved', decided_at = ?1 \
+                 WHERE id = ?2 AND status = 'pending' AND expires_at > ?1 \
+                 AND EXISTS (SELECT 1 FROM agents \
+                             WHERE agents.name = requests.agent AND agents.revoked_at IS NULL)",
+            )
+            .bind(self.clock.now())
+            .bind(id.as_str())
+            .execute(&mut *tx)
+            .await?;
+            if approved.rows_affected() == 0 {
+                return Err(RequestError::AlreadyDecided);
+            }
+            sqlx::query(
+                "INSERT INTO grants \
+                 (id, request_id, agent, window_secs, not_before, not_after, view) \
+                 VALUES (?, ?, ?, ?, ?, ?, ?)",
+            )
+            .bind(grant.grant_id.as_str())
+            .bind(id.as_str())
+            .bind(agent.as_str())
+            .bind(window_secs)
+            .bind(grant.not_before)
+            .bind(grant.not_after)
+            .bind(&view)
+            .execute(&mut *tx)
+            .await?;
+            tx.commit().await?;
+            Ok(())
+        }
+        .await;
+        note_if_not_applied(&self.audit, &applied, &transition).await;
+        applied?;
         self.bus.publish(&id);
         Ok(())
     }
@@ -999,23 +1064,35 @@ impl Requests {
         }
     }
 
-    /// End a grant now. Revoking an already revoked grant does nothing.
+    /// End a grant now, whatever state the audit log is in: if its entry cannot
+    /// be written, the owner is told and this returns [`AuditOutcome::Missing`].
+    /// Revoking an already revoked grant changes nothing, and reports the same.
     ///
     /// # Errors
-    /// [`RequestError::NotFound`] if no such grant exists.
-    pub async fn revoke_grant(&self, grant_id: &Id, by: &str) -> Result<(), RequestError> {
+    /// [`RequestError::NotFound`] if no such grant exists; storage failures,
+    /// which mean the grant was not revoked.
+    pub async fn revoke_grant(
+        &self,
+        grant_id: &Id,
+        by: &str,
+    ) -> Result<AuditOutcome, RequestError> {
         let this = self.clone();
         let (grant_id, by) = (grant_id.clone(), by.to_owned());
         detached(async move { this.revoke_grant_now(&grant_id, &by).await }).await
     }
 
-    async fn revoke_grant_now(&self, grant_id: &Id, by: &str) -> Result<(), RequestError> {
+    async fn revoke_grant_now(
+        &self,
+        grant_id: &Id,
+        by: &str,
+    ) -> Result<AuditOutcome, RequestError> {
+        let now = self.clock.now();
         let mut tx = begin(&self.pool).await?;
         let Some(row) = sqlx::query(
             "UPDATE grants SET revoked_at = ? WHERE id = ? AND revoked_at IS NULL \
              RETURNING request_id",
         )
-        .bind(self.clock.now())
+        .bind(now)
         .bind(grant_id.as_str())
         .fetch_optional(&mut *tx)
         .await?
@@ -1026,10 +1103,10 @@ impl Requests {
                 .await?;
             // Revoked already, perhaps by another process: its sessions end
             // now rather than at the relay's next check.
-            if exists.is_some() {
-                self.sessions.revoke_grant(grant_id);
-            }
-            return exists.map(|_| ()).ok_or(RequestError::NotFound);
+            drop(tx);
+            exists.ok_or(RequestError::NotFound)?;
+            self.sessions.revoke_grant(grant_id);
+            return Ok(self.settle_entries().await);
         };
         let request_id: Id = parse(&row, "request_id")?;
         sqlx::query("UPDATE requests SET status = 'revoked' WHERE id = ? AND status = 'approved'")
@@ -1040,32 +1117,36 @@ impl Requests {
             grant_id: grant_id.clone(),
             by: by.to_owned(),
         };
-        audit_and_commit(
-            &self.audit,
-            tx,
-            vec![revoked],
-            &format!("revocation of grant {grant_id}"),
-        )
-        .await?;
+        commit_with_entries(tx, vec![revoked], now).await?;
         self.sessions.revoke_grant(grant_id);
+        let outcome = self.settle_entries().await;
         self.bus.publish(&request_id);
-        Ok(())
+        if outcome == AuditOutcome::Missing {
+            self.tell_owner_unaudited(format!("Revoking grant {grant_id}"));
+        }
+        Ok(outcome)
     }
 
-    /// Revoke an agent and everything it holds; see [`revoke_agent`].
+    /// Revoke an agent and everything it holds, whatever state the audit log is
+    /// in (the owner is told if its entries cannot be written); see
+    /// [`revoke_agent`].
     ///
     /// # Errors
     /// [`RequestError::UnknownAgent`] or storage failures.
-    pub async fn revoke_agent(&self, name: &AgentName) -> Result<(), RequestError> {
+    pub async fn revoke_agent(&self, name: &AgentName) -> Result<AuditOutcome, RequestError> {
         let this = self.clone();
         let name = name.clone();
         detached(async move {
-            let affected = revoke_agent(&this.pool, &this.audit, &name, this.clock.now()).await?;
+            let affected = revoke_agent(&this.pool, &name, this.clock.now()).await?;
             this.sessions.revoke_agent(&name);
+            let outcome = this.settle_entries().await;
             for id in &affected {
                 this.bus.publish(id);
             }
-            Ok(())
+            if outcome == AuditOutcome::Missing {
+                this.tell_owner_unaudited(format!("Revoking agent {name}"));
+            }
+            Ok(outcome)
         })
         .await
     }
@@ -1231,8 +1312,9 @@ impl Requests {
         Ok(None)
     }
 
-    /// End a grant on behalf of the agent that holds it. Revoking an already
-    /// revoked grant does nothing.
+    /// End a grant on behalf of the agent that holds it, as
+    /// [`Requests::revoke_grant`] does. Revoking an already revoked grant does
+    /// nothing.
     ///
     /// # Errors
     /// [`RequestError::NotFound`] if the grant does not exist or belongs to
@@ -1241,7 +1323,7 @@ impl Requests {
         &self,
         agent: &AgentName,
         grant_id: &Id,
-    ) -> Result<(), RequestError> {
+    ) -> Result<AuditOutcome, RequestError> {
         sqlx::query("SELECT 1 FROM grants WHERE id = ? AND agent = ?")
             .bind(grant_id.as_str())
             .bind(agent.as_str())
@@ -1309,14 +1391,8 @@ impl Requests {
             .iter()
             .map(|id| AuditEvent::Expired { id: id.clone() })
             .collect();
-        let listed = ids.iter().map(Id::as_str).collect::<Vec<_>>().join(", ");
-        audit_and_commit(
-            &self.audit,
-            tx,
-            events,
-            &format!("expiry of request(s) {listed}"),
-        )
-        .await?;
+        commit_with_entries(tx, events, now).await?;
+        self.settle_entries().await;
         for id in &ids {
             self.bus.publish(id);
         }
@@ -1399,17 +1475,19 @@ async fn check_key_unbound(
 /// (their requests too). Returns the ids of every affected request so a
 /// running server can wake their long-polls.
 ///
+/// This does not touch the audit log: the entries wait in the database, and the
+/// caller then writes them with [`write_entries`] and reports what it could not.
+///
 /// When this runs in another process (the `agent revoke` admin command), the
 /// server's in-process [`StatusBus`] is not told; its long-polls see
 /// `revoked` on their next re-read, within the 30 s wait cap, and its relay
 /// ends the agent's sessions at its next grant check (every second).
 ///
 /// # Errors
-/// [`RequestError::UnknownAgent`] if no such agent exists; storage or audit
-/// failures (nothing changes then).
+/// [`RequestError::UnknownAgent`] if no such agent exists; storage failures
+/// (nothing changes then).
 pub async fn revoke_agent(
     pool: &SqlitePool,
-    audit: &AuditLog,
     name: &AgentName,
     now: i64,
 ) -> Result<Vec<Id>, RequestError> {
@@ -1460,66 +1538,8 @@ pub async fn revoke_agent(
         });
         affected.push(request_id);
     }
-    audit_and_commit(audit, tx, events, &format!("revocation of agent {name}")).await?;
+    commit_with_entries(tx, events, now).await?;
     Ok(affected)
-}
-
-/// Record `events`, then commit `tx`.
-///
-/// The audit entries come first so no change ever lands unaudited. If a
-/// later step fails after something was recorded (a further entry or the
-/// commit), an `Error { context: "commit" }` entry states that `transition`
-/// did not take effect.
-pub(crate) async fn audit_and_commit(
-    audit: &AuditLog,
-    tx: Transaction<'static, Sqlite>,
-    events: Vec<AuditEvent>,
-    transition: &str,
-) -> Result<(), RequestError> {
-    let mut recorded = false;
-    for event in events {
-        if let Err(e) = audit.append(event).await {
-            if recorded {
-                record_not_committed(audit, transition, &e.to_string()).await;
-            }
-            return Err(e.into());
-        }
-        recorded = true;
-    }
-    if let Err(e) = tx.commit().await {
-        record_not_committed(audit, transition, &e.to_string()).await;
-        return Err(e.into());
-    }
-    Ok(())
-}
-
-async fn record_not_committed(audit: &AuditLog, transition: &str, cause: &str) {
-    let event = AuditEvent::Error {
-        context: "commit".to_owned(),
-        message: format!("{transition} did not take effect: {cause}"),
-    };
-    if let Err(e) = audit.append(event).await {
-        tracing::error!(transition, error = %e, "could not record an uncommitted transition");
-    }
-}
-
-/// Run a state transition to completion on its own task, so dropping the
-/// caller (for example a disconnected HTTP client) never stops it halfway.
-async fn detached<T>(
-    work: impl Future<Output = Result<T, RequestError>> + Send + 'static,
-) -> Result<T, RequestError>
-where
-    T: Send + 'static,
-{
-    tokio::spawn(work)
-        .await
-        .map_err(|_| RequestError::Internal("state transition task failed"))?
-}
-
-/// Start a write transaction that takes the write lock up front, so
-/// concurrent writers queue on the busy timeout instead of failing.
-pub(crate) async fn begin(pool: &SqlitePool) -> Result<Transaction<'static, Sqlite>, sqlx::Error> {
-    pool.begin_with("BEGIN IMMEDIATE").await
 }
 
 fn to_status(row: &SqliteRow) -> Result<RequestStatus, RequestError> {
@@ -1627,11 +1647,18 @@ pub async fn sweep_loop(
                 if let Err(e) = requests.sweep_nonces().await {
                     tracing::error!(error = %e, "nonce sweep failed");
                 }
-                requests.flush_refusals(false).await;
+                requests.flush_waiting_entries().await;
+                // On its own task: it writes the log, which may have stalled, and
+                // must not hold up expiry or the waiting entries.
+                let flushing = requests.clone();
+                drop(tokio::spawn(async move { flushing.flush_refusals(false).await }));
             }
             // Any change, or the sender going away, means stop.
             _ = shutdown.changed() => {
-                requests.flush_refusals(true).await;
+                let flushed = requests.flush_refusals(true);
+                if tokio::time::timeout(revocation::WRITE_WAIT, flushed).await.is_err() {
+                    tracing::error!("the audit log did not take the refusal counts at shutdown");
+                }
                 return;
             }
         }
@@ -1640,13 +1667,9 @@ pub async fn sweep_loop(
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        ACTIVE_RELAY_GRANTS, AuditEvent, AuditLog, ENDED_GRANTS, LIVE_SSH_KEYS, RequestError,
-        audit_and_commit, begin,
-    };
+    use super::{ACTIVE_RELAY_GRANTS, ENDED_GRANTS, LIVE_SSH_KEYS};
     use crate::store;
     use sqlx::Row as _;
-    use warden_broker_proto::Id;
 
     /// The query plan of `sql`, one step per line.
     async fn plan(pool: &sqlx::SqlitePool, sql: &str) -> Vec<String> {
@@ -1750,52 +1773,5 @@ mod tests {
                 ("revoked".to_owned(), true),
             ]
         );
-    }
-
-    #[tokio::test]
-    async fn failed_commit_is_recorded_as_not_taking_effect() {
-        let dir = tempfile::tempdir().unwrap();
-        let pool = store::open(&dir.path().join("warden.db")).await.unwrap();
-        let path = dir.path().join("audit.jsonl");
-        let audit = AuditLog::open(&path).await.unwrap();
-
-        // A deferred foreign-key violation makes the commit itself fail.
-        let mut tx = begin(&pool).await.unwrap();
-        sqlx::query("PRAGMA defer_foreign_keys = ON")
-            .execute(&mut *tx)
-            .await
-            .unwrap();
-        sqlx::query(
-            "INSERT INTO grants (id, request_id, agent, window_secs, not_before, not_after, view) \
-             VALUES ('g', 'no-such-request', 'a', 900, 0, 900, '{}')",
-        )
-        .execute(&mut *tx)
-        .await
-        .unwrap();
-        let id = Id::random();
-        let result = audit_and_commit(
-            &audit,
-            tx,
-            vec![AuditEvent::Denied { id: id.clone() }],
-            &format!("denial of request {id}"),
-        )
-        .await;
-        assert!(matches!(result, Err(RequestError::Db(_))), "{result:?}");
-
-        let text = std::fs::read_to_string(&path).unwrap();
-        let lines: Vec<&str> = text.lines().collect();
-        assert_eq!(lines.len(), 2, "{text}");
-        assert!(lines[0].contains(r#""type":"denied""#));
-        assert!(lines[1].contains(r#""context":"commit""#), "{text}");
-        assert!(
-            lines[1].contains(&format!("denial of request {id} did not take effect")),
-            "{text}"
-        );
-        assert_eq!(crate::audit::verify(&path).unwrap(), 2);
-        let grants: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM grants")
-            .fetch_one(&pool)
-            .await
-            .unwrap();
-        assert_eq!(grants, 0);
     }
 }

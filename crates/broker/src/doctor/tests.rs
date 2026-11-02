@@ -53,6 +53,7 @@ struct Fake {
     local: LocalProbe,
     ring: fn(&str) -> Result<(), NotifyError>,
     passkeys: PasskeyProbe,
+    waiting: Result<i64, String>,
     listener: ListenerProbe,
     paths: HashMap<PathBuf, io::ErrorKind>,
     facts: PathFacts,
@@ -70,6 +71,7 @@ impl Fake {
             local: LocalProbe::Unreadable("not asked for".to_owned()),
             ring: |_| Ok(()),
             passkeys: PasskeyProbe::Enrolled(1),
+            waiting: Ok(0),
             listener: ListenerProbe::Accepted,
             paths: HashMap::new(),
             facts: PathFacts {
@@ -114,6 +116,10 @@ impl Environment for Fake {
 
     async fn passkeys(&self, _db: &Path) -> PasskeyProbe {
         self.passkeys.clone()
+    }
+
+    async fn waiting_entries(&self, _db: &Path) -> Result<i64, String> {
+        self.waiting.clone()
     }
 
     async fn listener(&self, _addr: SocketAddr) -> ListenerProbe {
@@ -544,4 +550,24 @@ async fn no_configured_secret_survives_into_the_report() {
         assert!(!text.contains(secret), "{text}");
     }
     assert!(text.contains("[REDACTED]"), "{text}");
+}
+
+#[tokio::test]
+async fn waiting_audit_entries_map_to_pass_fail_and_could_not_check() {
+    let cases = [
+        (Ok(0), Status::Pass),
+        (Ok(2), Status::Fail),
+        (Err("locked".to_owned()), Status::CouldNotCheck),
+    ];
+    for (probe, expected) in cases {
+        let fake = Fake {
+            waiting: probe.clone(),
+            ..Fake::healthy()
+        };
+        assert_eq!(
+            status(&run(&fake).await, "audit.waiting"),
+            expected,
+            "{probe:?}"
+        );
+    }
 }
