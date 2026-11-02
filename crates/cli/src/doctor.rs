@@ -98,6 +98,7 @@ fn without_key(error: CallError, key: Option<&Zeroizing<String>>) -> CallError {
         CallError::Unavailable(m) => CallError::Unavailable(clean(m)),
         CallError::Refused(m) => CallError::Refused(clean(m)),
         CallError::Revoked(m) => CallError::Revoked(clean(m)),
+        CallError::Expired(m) => CallError::Expired(clean(m)),
     }
 }
 
@@ -269,7 +270,9 @@ fn accepted_check(config: &Config, accepted: Result<(), CallError>) -> Check {
             reason,
             "Get the broker answering, then run doctor again.",
         ),
-        Err(CallError::Refused(reason) | CallError::Revoked(reason)) => Check::fail(
+        Err(
+            CallError::Refused(reason) | CallError::Revoked(reason) | CallError::Expired(reason),
+        ) => Check::fail(
             NAME,
             reason,
             format!(

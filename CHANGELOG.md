@@ -19,6 +19,13 @@ All notable changes to this project are recorded here. The format follows
   Linux arm64, so the CLI installs without Rust. The Linux binaries are
   fully static. Each `.tar.gz` has a build-provenance attestation to check
   with `gh attestation verify`.
+- `warden-server agent add` prints what to run on the agent's machine, on
+  stderr: the exact `warden login` command, with the broker's audience for a
+  key-signed agent. `--server <url>` gives it the agent API's URL. A bearer key
+  is still printed once, alone on stdout, and never in these instructions.
+- `docs/agent-instructions.md`, a block to paste into an agent's `AGENTS.md` or
+  `CLAUDE.md`, and `docs/agent-examples.md`, with an SSH deployment and an API
+  call end to end.
 
 ### Changed
 
@@ -26,6 +33,10 @@ All notable changes to this project are recorded here. The format follows
   and 1Password as the recommended setup and what each part protects, and adds
   a table of the setups supported today with their security cost. It also lists
   the notification channel as a requirement.
+- `warden request` and `warden ssh`/`warden http` say what to do next when a
+  request is denied, expires or is revoked, or there is no active grant.
+- `warden http` now exits 5, not 1, when the broker says the grant has expired,
+  and removes its local record.
 
 ## [0.8.1] - 2026-11-01
 
