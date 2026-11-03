@@ -490,6 +490,85 @@ async fn setup_leaves_git_alone_without_a_grant() {
     assert!(!s.machine.root.path().join("home/gitconfig").exists());
 }
 
+/// A signing request made by a run that is killed is listed like any other, and
+/// once approved it works with nothing to collect: nothing about it was local.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_killed_runs_signing_request_is_listed_and_needs_no_collecting() {
+    let s = setup().await;
+    let mut child = s
+        .machine
+        .warden()
+        .args(["request", "signing", "--goal", "sign my commits"])
+        .args(["--session", "build-work"])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    let token = CapturingNotifier::token(&s.broker.capture.next().await);
+    child.kill().unwrap();
+    child.wait().unwrap();
+
+    let status = |s: &Setup| {
+        let out = s.machine.warden().arg("status").output().unwrap();
+        assert_eq!(out.status.code(), Some(0), "{}", text(&out.stderr));
+        text(&out.stdout)
+    };
+    let listed = status(&s);
+    let (_, pending) = listed.split_once("pending requests:\n").unwrap();
+    for part in [
+        "commit signing for 30d",
+        "session: build-work",
+        "goal: sign my commits",
+    ] {
+        assert!(pending.contains(part), "{listed}");
+    }
+    let id = s.broker.state().requests.pending_expiries().await.unwrap();
+    let fingerprint = s.broker.state().requests.pending_requests().await.unwrap()[0]
+        .fingerprint
+        .clone();
+    assert!(pending.contains(&id[0].0.to_string()), "{listed}");
+    assert!(pending.contains(&fingerprint.words()), "{listed}");
+    assert!(pending.contains(fingerprint.as_str()), "{listed}");
+    assert!(
+        !listed.contains(&token) && !listed.contains("/approve"),
+        "{listed}"
+    );
+
+    let approved = s.broker.approve(&token, Window::D30).await;
+    assert!(approved.status.is_success(), "{}", approved.body);
+    let listed = status(&s);
+    let (_, rest) = listed.split_once("commit signing with ").unwrap();
+    let (_, rest) = rest.split_once("grant ").unwrap();
+    let grant = rest.split_whitespace().next().unwrap();
+    assert!(!listed.contains("not on this machine"), "{listed}");
+
+    let collected = s
+        .machine
+        .warden()
+        .args(["request", "collect", grant])
+        .output()
+        .unwrap();
+    let says = text(&collected.stderr);
+    assert_eq!(collected.status.code(), Some(1), "{says}");
+    assert!(says.contains("nothing to collect"), "{says}");
+    assert_eq!(collected.stdout, [] as [u8; 0]);
+    assert_eq!(
+        s.machine.files_containing(grant.as_bytes()),
+        [] as [PathBuf; 0]
+    );
+
+    // What the message says: git works, on the grant the killed run asked for.
+    let setup_git = s.machine.setup();
+    assert_eq!(
+        setup_git.status.code(),
+        Some(0),
+        "{}",
+        text(&setup_git.stderr)
+    );
+    let commit = s.machine.commit("signed after the run was killed");
+    assert_eq!(commit.status.code(), Some(0), "{}", text(&commit.stderr));
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn setup_leaves_git_alone_when_the_broker_has_no_key() {
     let s = setup().await;

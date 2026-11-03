@@ -300,6 +300,21 @@ impl Window {
             _ => Err(ParseError::new("window", "must be one of 1d, 7d, 30d, 90d")),
         }
     }
+
+    /// The window as written on the wire and on the command line, such as `15m`.
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::M15 => "15m",
+            Self::M30 => "30m",
+            Self::H1 => "1h",
+            Self::H4 => "4h",
+            Self::D1 => "1d",
+            Self::D7 => "7d",
+            Self::D30 => "30d",
+            Self::D90 => "90d",
+        }
+    }
 }
 
 /// Covers the windows of SSH and API access only: see [`Window::commit_signing`].
@@ -487,6 +502,33 @@ pub struct CreatedResponse {
     pub id: Id,
     /// Fingerprint the approver sees.
     pub fingerprint: Fingerprint,
+}
+
+/// One of the agent's own requests still waiting for the owner, as listed by
+/// `GET /v1/requests`. It has no approval link: that goes to the owner, and the
+/// broker keeps only its hash.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PendingRequest {
+    /// Request identifier.
+    pub id: Id,
+    /// Fingerprint the approver sees.
+    pub fingerprint: Fingerprint,
+    /// The goal, as sent.
+    pub goal: Goal,
+    /// The access, as sent.
+    pub access: Access,
+    /// The window, as sent.
+    pub window: Window,
+    /// The session label, as sent. Part of the fingerprint when present.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session: Option<SessionLabel>,
+    /// The link about the work, as sent. Part of the fingerprint when present.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub link: Option<SessionLink>,
+    /// When the request was made, Unix seconds.
+    pub created_at: i64,
+    /// When it expires unless decided first, Unix seconds.
+    pub expires_at: i64,
 }
 
 /// Lifecycle state of a request as seen by the agent.

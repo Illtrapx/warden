@@ -1730,16 +1730,7 @@ pub fn sha256_hex(token: &str) -> String {
 /// The wire spelling of `window` (`15m`, `30m`, `1h`, `4h`, `1d`, `7d`, `30d`, `90d`).
 #[must_use]
 pub const fn window_label(window: Window) -> &'static str {
-    match window {
-        Window::M15 => "15m",
-        Window::M30 => "30m",
-        Window::H1 => "1h",
-        Window::H4 => "4h",
-        Window::D1 => "1d",
-        Window::D7 => "7d",
-        Window::D30 => "30d",
-        Window::D90 => "90d",
-    }
+    window.label()
 }
 
 /// Expire due pending requests, forget expired nonces and record held-back

@@ -7,6 +7,7 @@ mod doctor;
 mod git_signing;
 mod guidance;
 mod http;
+mod recover;
 mod request_context;
 mod setup_git;
 mod sign;
@@ -23,7 +24,7 @@ use clap::{Parser, Subcommand};
 use ssh_key::rand_core::OsRng;
 use ssh_key::{Algorithm, Certificate, PrivateKey};
 use url::Url;
-use warden_broker_proto::doctor::EXIT_NOTHING_FAILED;
+use warden_broker_proto::doctor::{EXIT_NOTHING_FAILED, sanitize};
 use warden_broker_proto::signing::{Audience, PROTOCOL};
 use warden_broker_proto::{
     Access, AgentName, ApiGrant, CreateRequest, Goal, GrantAccess, GrantView, Id, RequestStatus,
@@ -168,7 +169,8 @@ enum Cmd {
         #[command(subcommand)]
         what: SetupWhat,
     },
-    /// Show local grants and the broker's view of this agent's grants.
+    /// Show local grants, and the broker's view of this agent's grants and
+    /// pending requests.
     Status,
     /// Revoke a grant on the broker and stop its local agent.
     Revoke {
@@ -244,8 +246,16 @@ enum RequestKind {
     /// Withdraw one of this agent's pending requests, so its approval link
     /// stops working.
     Cancel {
-        /// Request identifier, as printed while `warden request` waits.
+        /// Request identifier, as printed while `warden request` waits or
+        /// listed by `warden status`.
         id: Id,
+    },
+    /// Start using an api grant the owner approved after the `warden request`
+    /// that asked for it was gone. An SSH grant cannot be collected, as its key
+    /// was lost with that run.
+    Collect {
+        /// Grant identifier, as listed by `warden status`.
+        grant: Id,
     },
 }
 
@@ -389,6 +399,9 @@ async fn run(cmd: Cmd) -> Result<()> {
         Cmd::Request {
             kind: RequestKind::Cancel { id },
         } => cancel(&id).await,
+        Cmd::Request {
+            kind: RequestKind::Collect { grant },
+        } => recover::collect(&grant).await,
         Cmd::Http {
             secret,
             method,
@@ -766,19 +779,20 @@ fn check_scope_not_wider(
 }
 
 /// The scope of `api` for the owner-facing line after approval: whether it
-/// can modify anything, the methods and where it applies.
+/// can modify anything, the methods and where it applies. These come from the
+/// broker as plain strings, so the line is made safe to print.
 fn api_scope(api: &ApiGrant) -> String {
     let access = if is_read_only(&api.methods) {
         "read-only".to_owned()
     } else {
         format!("can modify: {}", modifying_methods(&api.methods).join(", "))
     };
-    format!(
+    sanitize(&format!(
         "scope: {access}; methods {}; {}{}",
         api.methods.join(", "),
         api.origin,
         api.path_prefix
-    )
+    ))
 }
 
 fn announce(grant: &GrantView) {
@@ -1250,34 +1264,17 @@ async fn status() -> Result<()> {
     println!("local api grants:");
     for (path, record) in http::load()? {
         match record {
-            Ok(r) => println!(
-                "  api:{}  {}  grant {}  until {}",
-                r.secret,
-                r.origin,
-                r.grant_id,
-                local_time(r.not_after)
-            ),
+            Ok(r) => println!("{}", recover::api_record_line(&r)),
             Err(e) => println!("  {}: {e:#}", path.display()),
         }
     }
+    let local = recover::local_grant_ids()?;
     let (_, client) = client()?;
     println!("broker grants:");
     for g in client.grants().await? {
-        let subject = match &g.access {
-            GrantAccess::Ssh(ssh) => format!("{}@{}:{}", ssh.user, ssh.host, ssh.port),
-            GrantAccess::Api(api) => format!("api:{}", api.secret),
-            GrantAccess::Relay(relay) => format!("{}@{} via relay", relay.user, relay.target),
-            GrantAccess::CommitSigning(signing) => {
-                format!("commit signing with {}", signing.key_fingerprint)
-            }
-        };
-        println!(
-            "  {subject}  grant {}  until {}",
-            g.grant_id,
-            local_time(g.not_after)
-        );
+        println!("{}", recover::broker_grant_line(&g, &local));
     }
-    Ok(())
+    recover::print_pending(&client).await
 }
 
 /// How `status` shows where a local grant connects.

@@ -24,6 +24,14 @@ All notable changes to this project are recorded here. The format follows
 
 ### Added
 
+- `GET /v1/requests` lists an agent's own pending requests, and `warden status` shows
+  them, so an agent that lost the output of `warden request` can find them again.
+  Listing notifies nobody and counts against no limit, and the approval link is never
+  included.
+- `warden request collect <grant>` starts using an `api` grant the owner approved after
+  the `warden request` that asked for it was gone. `warden status` marks such grants. An
+  SSH grant cannot be collected, as its key was lost with that run: the docs say what to
+  do instead. A commit signing grant needs no collecting.
 - Releases attach the `warden` CLI as `.deb` and `.rpm` packages for amd64 and arm64,
   built from the same binaries, attested and listed in the signed manifest. See
   [docs/agent-usage.md](docs/agent-usage.md). There is no package repository, so nothing
