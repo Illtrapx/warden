@@ -28,7 +28,7 @@ database without a backup.
 
 ## Private files
 
-From the next release, warden keeps its files private to its user, and corrects
+From 0.9.0, warden keeps its files private to its user, and corrects
 their permissions when it starts. Most setups need do nothing, but check these:
 
 - **A tool reading warden's data as another non-root user**, such as a backup job
@@ -43,13 +43,22 @@ their permissions when it starts. Most setups need do nothing, but check these:
 - **A data directory others can write to** stops warden at start if warden cannot
   correct it. See [which directories it corrects](configuration.md#the-data-directory).
 
-`warden-server doctor` reports all of these. Run it on the new version before
-switching over, as older versions have no `doctor`: for Docker, pull the new image
-and run `docker compose run --rm warden doctor`. It changes nothing.
+`warden-server doctor` reports these, and it changes nothing. Older versions have
+no `doctor`, so run it on the new version. For Docker, stop warden, as the documented
+Compose file gives it a fixed address that a second container cannot share, then
+change the image pin in your Compose file to the new version and run
+`docker compose run --rm warden doctor`, which pulls it. Read the result
+with care, as warden is not running and has not started on the new version yet:
+
+- The listener checks fail because nothing is listening. That is expected here.
+- A loose mode also fails, even on a file the server would correct at start. Only
+  the cases above stop the server.
+
+Run it again with `docker compose exec` once warden is up.
 
 ## Plain http URLs
 
-From the next release, warden refuses to start when `WARDEN_OP_CONNECT_URL`,
+From 0.9.0, warden refuses to start when `WARDEN_OP_CONNECT_URL`,
 `WARDEN_NOTIFY_HOMEASSISTANT_WEBHOOK_URL` or `WARDEN_NOTIFY_NTFY_URL` is plain
 `http` to a host that is not clearly local or private. The error names the
 variable.

@@ -118,7 +118,7 @@ grep -x "tag $tag" tag.payload   # the name it was signed under; expect one line
 
 | Version | Tag | Image attestation | CLI archives | Signed manifest |
 |---|---|---|---|---|
-| Next release onward | Signed | Yes | Yes, attested | Yes |
+| v0.9.0 onward | Signed | Yes | Yes, attested | Yes |
 | v0.8.1 | Signed | Yes | None | **No** |
 | v0.8.0 | Signed | Never released | Never released | No |
 | v0.1.0 to v0.7.0 | **Not signed** (lightweight tags) | Yes | None | **No** |
@@ -134,7 +134,8 @@ signature covers that image.
 
 The private key is not on GitHub: the repository has no Actions secret holding it,
 no workflow uses it, and only its public half is listed on the account and in this
-repository. The release workflow
+repository. It is a file on the maintainer's machine, so it guards against a
+compromise of GitHub, and not against something running as the maintainer there. The release workflow
 cannot sign the manifest, which is why the maintainer signs it after the workflow
 has finished, with `scripts/sign-release.sh`, before publishing the draft.
 
