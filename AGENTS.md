@@ -67,6 +67,7 @@ cargo deny check
 cargo deny --manifest-path fuzz/Cargo.toml check
 cargo metadata --locked --manifest-path fuzz/Cargo.toml --format-version 1 > /dev/null
 python3 -I .github/scripts/crate_age.py --base main
+python3 -I .github/scripts/openssl_support.py
 uvx zizmor@1.31.1 .   # when a workflow or the Dependabot config changes
 ```
 
@@ -91,6 +92,12 @@ uvx zizmor@1.31.1 .   # when a workflow or the Dependabot config changes
   have been published at least 7 days before it lands in `Cargo.lock`,
   except the oldest release that fixes a security advisory (RUSTSEC or GHSA), listed in
   `.github/crate-age-allow.toml` (see "Dependency age" in the README).
+- OpenSSL is pinned to a release tarball by hash in `scripts/openssl-pin.env`, built by
+  `scripts/build-openssl.sh`, because no `openssl-src` crate that `openssl-sys` accepts
+  carries a current release. A nightly run, which opens an issue, and the release
+  workflow fail when a newer release of the line is out, or 90 days before its support
+  ends. Builds that ship set `WARDEN_OPENSSL_PINNED`, so that any other OpenSSL fails
+  them.
 - GitHub Actions are pinned to the full commit SHA of a release at least
   7 days old.
 
@@ -170,6 +177,11 @@ it does not replace that rule: add no other trailer for the agent.
 ## Releases
 
 Semantic versioning, one version for the whole workspace.
+
+Before a release, read
+[OpenSSL's vulnerabilities page](https://openssl-library.org/news/vulnerabilities/) for
+the line in `scripts/openssl-pin.env`, and any open "Nightly dependency check failed"
+issue: an advisory with no fixed release yet fails no check.
 
 1. A release pull request bumps `version` in `Cargo.toml` (the workspace
    package and the internal crates' dependency entries) and in the internal
