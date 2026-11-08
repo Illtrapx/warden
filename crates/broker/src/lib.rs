@@ -9,6 +9,7 @@ use warden_broker_proto::signing::Audience;
 use crate::approval::passkeys::Passkeys;
 use crate::audit::AuditLog;
 use crate::config::Config;
+use crate::github_app::GithubApi;
 use crate::identity::IdentitySource;
 use crate::policy::SecretBackend;
 use crate::requests::{Clock, Requests};
@@ -60,6 +61,8 @@ pub struct AppState {
     pub passkeys: Arc<Passkeys>,
     /// This broker's audience, published at `GET /v1/info`.
     pub audience: Audience,
+    /// Where GitHub's API is, for minting agent tokens.
+    pub github: GithubApi,
 }
 
 /// The two routers of the broker: the agent API and the approval UI, each

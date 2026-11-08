@@ -62,8 +62,8 @@ struct RefusalMinute {
     held: u64,
 }
 
-/// The refusals to sign of every agent. Enrolled agents are the only callers that
-/// get this far, so this holds an entry per enrolled agent at most. In memory: a
+/// The refusals to sign (or, for another instance, to mint) of every agent.
+/// Enrolled agents are the only callers that get this far, so this holds an entry per enrolled agent at most. In memory: a
 /// restart can at worst lose the count of a minute.
 #[derive(Debug, Default)]
 pub(super) struct SigningRefusals {
@@ -78,8 +78,8 @@ impl SigningRefusals {
     }
 
     /// Count a refusal of `agent` at `now`. Whether to record it in full; if not,
-    /// it is held for a [`AuditEvent::CommitSigningRefusalsHeld`] entry.
-    fn note(&self, agent: &AgentName, now: i64) -> bool {
+    /// it is held for a refusals-held entry.
+    pub(super) fn note(&self, agent: &AgentName, now: i64) -> bool {
         let mut agents = self.lock();
         let minute = agents.entry(agent.clone()).or_default();
         // A clock set back starts a new minute too.
@@ -97,7 +97,7 @@ impl SigningRefusals {
     }
 
     /// Take every count held back.
-    fn take_held(&self) -> Vec<(AgentName, u64)> {
+    pub(super) fn take_held(&self) -> Vec<(AgentName, u64)> {
         self.lock()
             .iter_mut()
             .filter(|(_, minute)| minute.held > 0)
@@ -106,7 +106,7 @@ impl SigningRefusals {
     }
 
     /// Put back `count`, which could not be written.
-    fn restore(&self, agent: &AgentName, count: u64) {
+    pub(super) fn restore(&self, agent: &AgentName, count: u64) {
         let mut agents = self.lock();
         let minute = agents.entry(agent.clone()).or_default();
         minute.held = minute.held.saturating_add(count);

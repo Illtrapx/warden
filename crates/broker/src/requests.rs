@@ -400,6 +400,8 @@ pub struct Requests {
     github_token_max: Window,
     /// What has been recorded of refusals to sign.
     signing_refusals: Arc<SigningRefusals>,
+    /// What has been recorded of refusals to mint GitHub tokens.
+    github_refusals: Arc<SigningRefusals>,
     /// Hosts a request may link to.
     link_hosts: LinkHosts,
 }
@@ -447,6 +449,7 @@ impl Requests {
             commit_signing_per_day: SIGNATURES_PER_DAY,
             github_token_max: Window::GITHUB_TOKEN_DEFAULT,
             signing_refusals: Arc::default(),
+            github_refusals: Arc::default(),
             link_hosts: LinkHosts::default(),
         }
     }

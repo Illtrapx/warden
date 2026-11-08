@@ -266,6 +266,39 @@ pub enum AuditEvent {
         /// How many.
         count: u64,
     },
+    /// The broker minted a GitHub installation token for an agent. Written before
+    /// the token leaves the broker; it is not given out if this entry cannot be
+    /// written. The token itself is never recorded.
+    GithubTokenMinted {
+        /// Grant it was minted under.
+        grant_id: Id,
+        /// The agent.
+        agent: AgentName,
+        /// The installation the token is for.
+        installation_id: u64,
+        /// The permissions the token has, as `name:level`.
+        permissions: Vec<String>,
+        /// When GitHub ends the token, unix seconds.
+        expires_at: i64,
+    },
+    /// The broker refused to mint a GitHub token for an agent, or minted one it
+    /// then did not give out because the grant had ended.
+    GithubTokenRefused {
+        /// The agent.
+        agent: AgentName,
+        /// The active grant it had, if any.
+        grant_id: Option<Id>,
+        /// Why (a fixed phrase, never secrets).
+        reason: String,
+    },
+    /// Refusals to mint for an agent beyond those recorded one by one in a minute,
+    /// counted so that refused calls cannot fill the log.
+    GithubTokenRefusalsHeld {
+        /// The agent.
+        agent: AgentName,
+        /// How many.
+        count: u64,
+    },
     /// The owner was told that a commit signing grant is about to end.
     CommitSigningRenewalNotified {
         /// The grant.

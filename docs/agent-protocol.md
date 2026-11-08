@@ -519,6 +519,7 @@ that it is the expected key, as `-Y verify` with an allowed-signers file does
 | `POST /v1/grants/{id}/http` | Make an HTTPS call with an `api` grant. |
 | `GET /v1/commit-signing/key` | The public half of the broker's commit signing key. |
 | `POST /v1/commit-signing/sign` | Have a commit signed, under the agent's active commit signing grant. |
+| `POST /v1/github-token` | Mint a GitHub App installation token, under the agent's active GitHub token grant. |
 
 ### `GET /healthz`
 
@@ -810,6 +811,33 @@ Have a commit signed under the agent's active commit signing grant; see
 - `429`: the grant has reached its limit of signatures for this UTC day, 5000 by default.
 - `500`, or `503` `{"error":"secret backend unavailable"}`: no signature, as with an
   entry that cannot be written to the audit log.
+
+### `POST /v1/github-token`
+
+Mint a GitHub App installation token under the agent's active GitHub token grant, which is
+read anew for each call; the grant id is not sent. Signed. The body is an empty object,
+`{}`: a token's repositories and permissions are not the agent's to choose, and any other
+field is refused.
+
+- `200`: `{"token":"ghs_…","expires_at":1793095212,"grant_id":"5e1c…"}`. `expires_at` is
+  when GitHub ends the token, in Unix seconds, an hour after it was minted. The token has
+  `contents`, `pull_requests` and `issues` write, `metadata` read, and nothing else.
+  Do not log it or write it to disk.
+- `400`: the body is not `{}`, or the broker holds no GitHub App
+  (`{"error":"GitHub tokens are not configured on this broker"}`).
+- `403` `{"error":"no active GitHub token grant for this agent"}`: none was ever granted,
+  or it ended or was revoked.
+- `409` `{"error":"the GitHub App changed; request a new grant"}`: the App or installation
+  is no longer the one the owner approved.
+- `409` `{"error":"grant revoked during the call"}` or `{"error":"grant expired during the
+  call"}`: the grant ended while the token was being minted, or was replaced by a new
+  one. The token is not given out; ask again under the new grant.
+- `503` `{"error":"GitHub could not issue a token; try again later"}`, or `{"error":"secret
+  backend unavailable"}`. Nothing GitHub said is passed on.
+- `500`: no token, as with an entry that cannot be written to the audit log.
+
+The broker records each token it mints (grant, installation, permissions and expiry, never
+the token) before returning it, and each refusal with a fixed reason.
 
 ## 7. Using a grant
 

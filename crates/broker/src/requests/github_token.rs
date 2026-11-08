@@ -8,6 +8,7 @@ use sqlx::Row as _;
 use warden_broker_proto::{AgentName, GithubTokenGrant, GrantAccess, GrantView, Id, Window};
 
 use super::{RequestError, Requests, parse};
+use crate::audit::AuditEvent;
 use crate::policy::GithubTokenPolicy;
 
 /// A usable GitHub token grant.
@@ -82,5 +83,40 @@ impl Requests {
             grant_id: parse(&row, "id")?,
             grant,
         }))
+    }
+
+    /// Record that `agent` was refused a GitHub token, for `reason` (a fixed phrase).
+    /// Past a few a minute only a count is kept, written later as one entry.
+    pub(crate) async fn record_github_token_refusal(
+        &self,
+        agent: &AgentName,
+        grant_id: Option<Id>,
+        reason: String,
+    ) {
+        if !self.github_refusals.note(agent, self.clock.now()) {
+            return;
+        }
+        let event = AuditEvent::GithubTokenRefused {
+            agent: agent.clone(),
+            grant_id,
+            reason,
+        };
+        if let Err(e) = self.audit.append(event).await {
+            tracing::error!(agent = %agent, error = %e, "could not audit a refusal to mint");
+        }
+    }
+
+    /// Write the refusals to mint held back since the last time.
+    pub(super) async fn flush_github_refusals(&self) {
+        for (agent, count) in self.github_refusals.take_held() {
+            let event = AuditEvent::GithubTokenRefusalsHeld {
+                agent: agent.clone(),
+                count,
+            };
+            if let Err(e) = self.audit.append(event).await {
+                tracing::error!(agent = %agent, error = %e, "could not audit refusals to mint");
+                self.github_refusals.restore(&agent, count);
+            }
+        }
     }
 }

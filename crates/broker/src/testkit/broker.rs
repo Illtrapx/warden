@@ -18,6 +18,7 @@ use super::{
 use crate::approval::passkeys::Passkeys;
 use crate::audit::AuditLog;
 use crate::config::Config;
+use crate::github_app::GithubApi;
 use crate::identity::TailscaleServeIdentity;
 use crate::policy::SecretBackend;
 use crate::proxy::ProxyLimits;
@@ -92,6 +93,7 @@ struct Limits {
     commit_signing_max: Window,
     commit_signing_per_day: u32,
     github_token_max: Window,
+    github_api: GithubApi,
 }
 
 impl Default for Limits {
@@ -103,6 +105,7 @@ impl Default for Limits {
             commit_signing_max: Window::COMMIT_SIGNING_DEFAULT,
             commit_signing_per_day: crate::requests::SIGNATURES_PER_DAY,
             github_token_max: Window::GITHUB_TOKEN_DEFAULT,
+            github_api: GithubApi::public(),
             link_hosts: LinkHosts::default(),
         }
     }
@@ -273,6 +276,22 @@ impl TestBroker {
         Self::fresh(
             Limits {
                 github_token_max,
+                ..Limits::default()
+            },
+            Some(format!("{RELAY_PUBLIC_HOST}:{RELAY_PUBLIC_PORT}")),
+        )
+        .await
+    }
+
+    /// Like [`TestBroker::new`], minting GitHub tokens at `github_api` instead of
+    /// the public API.
+    ///
+    /// # Panics
+    /// If any part of the setup fails.
+    pub async fn with_github_api(github_api: GithubApi) -> Self {
+        Self::fresh(
+            Limits {
+                github_api,
                 ..Limits::default()
             },
             Some(format!("{RELAY_PUBLIC_HOST}:{RELAY_PUBLIC_PORT}")),
@@ -471,6 +490,7 @@ impl TestBroker {
             requests,
             passkeys: Arc::new(passkeys),
             audience,
+            github: limits.github_api.clone(),
         };
         let (api_router, router) = crate::build_routers(state.clone());
         Self {

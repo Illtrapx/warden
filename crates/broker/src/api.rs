@@ -30,6 +30,7 @@ use crate::requests::{BACKEND_UNAVAILABLE, RequestError};
 use crate::signed;
 
 mod commit_signing;
+mod github_token;
 
 /// Largest accepted request body, in bytes.
 const BODY_LIMIT: usize = 16 * 1024;
@@ -83,6 +84,10 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/v1/commit-signing/sign",
             agent(post(commit_signing::sign), PROXY_BODY_LIMIT),
+        )
+        .route(
+            "/v1/github-token",
+            agent(post(github_token::mint), BODY_LIMIT),
         )
         .route(
             "/v1/grants/{id}/revoke",
