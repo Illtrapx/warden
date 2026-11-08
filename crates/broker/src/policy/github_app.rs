@@ -16,7 +16,7 @@ use warden_broker_proto::{GithubTokenGrant, Window};
 use zeroize::Zeroizing;
 
 use super::PolicyError;
-use super::onepassword::SecretField;
+use super::onepassword::{SecretField, required_field};
 
 /// The shortest RSA modulus accepted, in bytes (2048 bits): GitHub's own minimum.
 const MIN_MODULUS_BYTES: usize = 256;
@@ -36,9 +36,8 @@ fn app_error(reason: &str) -> PolicyError {
 /// The GitHub App: its ids and RSA private key. The key is never printed.
 ///
 /// Zeroization is best effort: `aws-lc-rs` wipes the key it parsed when the last
-/// clone is dropped, and the backends hold the PEM text in `Zeroizing` buffers.
-/// Accepted residual: the DER the PEM decoder produces and the copies inside the
-/// HTTP stack are not wiped.
+/// clone is dropped, the backends hold the PEM text in `Zeroizing` buffers, and the DER the PEM
+/// decoder produces is wiped after parsing. Accepted residual: the copies inside the HTTP stack are not wiped.
 #[derive(Clone)]
 pub struct GithubAppKey {
     app_id: String,
@@ -129,11 +128,13 @@ fn parse_rsa_key(pem: &[u8]) -> Result<KeyPair, PolicyError> {
             "the private key is passphrase-protected; an unencrypted RSA key is required",
         ));
     }
-    let der = PrivateKeyDer::from_pem_slice(pem)
-        .map_err(|_| app_error("the private key is not a readable PKCS#1 or PKCS#8 PEM key"))?;
+    let der =
+        Zeroizing::new(PrivateKeyDer::from_pem_slice(pem).map_err(|_| {
+            app_error("the private key is not a readable PKCS#1 or PKCS#8 PEM key")
+        })?);
     let not_rsa =
         || app_error("the private key is not an RSA key of at least 2048 bits (PKCS#1 or PKCS#8)");
-    let key = match &der {
+    let key = match &*der {
         PrivateKeyDer::Pkcs1(der) => KeyPair::from_der(der.secret_pkcs1_der()),
         PrivateKeyDer::Pkcs8(der) => KeyPair::from_pkcs8(der.secret_pkcs8_der()),
         _ => return Err(not_rsa()),
@@ -152,16 +153,11 @@ fn parse_rsa_key(pem: &[u8]) -> Result<KeyPair, PolicyError> {
 /// [`PolicyError::GithubApp`] naming the field that is missing or unusable.
 pub(super) fn parse_item(title: &str, fields: &[SecretField]) -> Result<GithubAppKey, PolicyError> {
     let field = |id: &str| -> Result<&str, PolicyError> {
-        fields
-            .iter()
-            .find(|f| f.id == id)
-            .and_then(|f| f.value.as_deref().map(String::as_str))
-            .filter(|v| !v.trim().is_empty())
-            .ok_or_else(|| {
-                PolicyError::GithubApp(format!(
-                    "item \"{title}\": field with id \"{id}\" is missing or empty"
-                ))
-            })
+        required_field(fields, id).ok_or_else(|| {
+            PolicyError::GithubApp(format!(
+                "item \"{title}\": field with id \"{id}\" is missing or empty"
+            ))
+        })
     };
     let in_item = |e: PolicyError| match e {
         PolicyError::GithubApp(reason) => {

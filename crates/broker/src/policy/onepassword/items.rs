@@ -81,6 +81,19 @@ pub(in crate::policy) fn parse_private_key(text: &str) -> Option<PrivateKey> {
     }
 }
 
+/// The value of the field with `id`, as the item has it, or `None` if there is no such
+/// field or it is blank.
+pub(in crate::policy) fn required_field<'a>(
+    fields: &'a [SecretField],
+    id: &str,
+) -> Option<&'a str> {
+    fields
+        .iter()
+        .find(|f| f.id == id)
+        .and_then(|f| f.value.as_deref().map(String::as_str))
+        .filter(|v| !v.trim().is_empty())
+}
+
 pub(super) fn invalid(item: &str, field: &str, reason: &str) -> PolicyError {
     PolicyError::Invalid {
         item: item.to_owned(),

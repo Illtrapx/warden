@@ -40,6 +40,7 @@ use items::invalid;
 pub(crate) use items::parse_host_port;
 pub(super) use items::{
     ApiItem, ItemUrl, SecretField, TargetItem, parse_api_secret, parse_private_key, parse_target,
+    required_field,
 };
 pub use probe::{CaProbe, VaultProbe};
 
@@ -70,7 +71,7 @@ enum KeyItemError {
 /// A key item (the CA, the commit signing key, the GitHub App), decoded so that no
 /// private-key text lives in a plain `String`.
 #[derive(Deserialize)]
-struct CaItem {
+struct KeyItem {
     #[serde(default)]
     fields: Vec<SecretField>,
 }
@@ -279,13 +280,9 @@ impl OnePasswordConnect {
         serde_json::from_slice(&body).map_err(|e| unreadable(&e))
     }
 
-    /// The title and private key of the one item tagged `tag`; `what` names the
+    /// The title and decoded body of the one item tagged `tag`; `what` names the
     /// item in messages, none of which quote it.
-    async fn tagged_key(
-        &self,
-        tag: &str,
-        what: &str,
-    ) -> Result<(String, PrivateKey), KeyItemError> {
+    async fn tagged_item(&self, tag: &str, what: &str) -> Result<(String, KeyItem), KeyItemError> {
         let mut items = self.tagged(tag).await.map_err(KeyItemError::Backend)?;
         let summary = match items.len() {
             0 => return Err(KeyItemError::Absent),
@@ -296,32 +293,40 @@ impl OnePasswordConnect {
                 )));
             }
         };
-        let unusable =
-            |reason: &str| KeyItemError::Unusable(format!("item \"{}\": {reason}", summary.title));
         check_id(&summary.id).map_err(KeyItemError::Backend)?;
         let body = self
             .vault_bytes(&["items", &summary.id])
             .await
             .map_err(KeyItemError::Backend)?;
         // Never interpolate the serde error: it can quote a field value.
-        let item: CaItem = serde_json::from_slice(&body)
-            .map_err(|_| unusable(&format!("unreadable {what} item")))?;
+        let item: KeyItem = serde_json::from_slice(&body).map_err(|_| {
+            KeyItemError::Unusable(format!(
+                "item \"{}\": unreadable {what} item",
+                summary.title
+            ))
+        })?;
         drop(body);
-        let text = item
-            .fields
-            .iter()
-            .find(|f| f.id == CA_FIELD_ID)
-            .and_then(|f| f.value.as_deref().map(String::as_str))
-            .filter(|v| !v.trim().is_empty())
-            .ok_or_else(|| {
-                unusable(&format!(
-                    "field with id \"{CA_FIELD_ID}\" is missing or empty"
-                ))
-            })?;
+        Ok((summary.title, item))
+    }
+
+    /// The title and private key of the one item tagged `tag`; `what` names the
+    /// item in messages, none of which quote it.
+    async fn tagged_key(
+        &self,
+        tag: &str,
+        what: &str,
+    ) -> Result<(String, PrivateKey), KeyItemError> {
+        let (title, item) = self.tagged_item(tag, what).await?;
+        let unusable = |reason: &str| KeyItemError::Unusable(format!("item \"{title}\": {reason}"));
+        let text = required_field(&item.fields, CA_FIELD_ID).ok_or_else(|| {
+            unusable(&format!(
+                "field with id \"{CA_FIELD_ID}\" is missing or empty"
+            ))
+        })?;
         let key = parse_private_key(text).ok_or_else(|| {
             unusable("the private key is not a readable OpenSSH or PKCS#8 Ed25519 key")
         })?;
-        Ok((summary.title.clone(), key))
+        Ok((title, key))
     }
 
     /// Summaries of all items in the vault carrying `tag`.
@@ -485,24 +490,12 @@ impl SecretBackend for OnePasswordConnect {
     }
 
     async fn github_app(&self) -> Result<GithubAppKey, PolicyError> {
-        let mut items = self.tagged(GITHUB_APP_TAG).await?;
-        let summary = match items.len() {
-            0 => return Err(PolicyError::NoGithubApp),
-            1 => items.remove(0),
-            n => {
-                return Err(PolicyError::GithubApp(format!(
-                    "{n} items are tagged \"{GITHUB_APP_TAG}\"; exactly one is required"
-                )));
-            }
-        };
-        check_id(&summary.id)?;
-        let body = self.vault_bytes(&["items", &summary.id]).await?;
-        // Never interpolate the serde error: it can quote a field value.
-        let item: CaItem = serde_json::from_slice(&body).map_err(|_| {
-            PolicyError::GithubApp(format!("item \"{}\": unreadable item", summary.title))
-        })?;
-        drop(body);
-        parse_github_app(&summary.title, &item.fields)
+        match self.tagged_item(GITHUB_APP_TAG, "GitHub App").await {
+            Ok((title, item)) => parse_github_app(&title, &item.fields),
+            Err(KeyItemError::Absent) => Err(PolicyError::NoGithubApp),
+            Err(KeyItemError::Unusable(reason)) => Err(PolicyError::GithubApp(reason)),
+            Err(KeyItemError::Backend(e)) => Err(e),
+        }
     }
 
     async fn has_github_app(&self) -> Result<bool, PolicyError> {
