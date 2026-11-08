@@ -22,6 +22,7 @@ pub mod commit_signing;
 pub mod config;
 pub mod doctor;
 pub mod enrollment;
+pub mod github_app;
 pub mod health;
 pub mod identity;
 pub mod notify;
