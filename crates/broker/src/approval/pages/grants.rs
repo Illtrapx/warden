@@ -23,6 +23,8 @@ enum LiveKind {
     Api,
     /// Commit signing: each signature is one quick call, recorded in the log.
     CommitSigning,
+    /// GitHub token: each mint is one quick call, recorded in the log.
+    GithubToken,
 }
 
 impl LiveKind {
@@ -32,6 +34,7 @@ impl LiveKind {
             GrantAccess::Relay(_) => Self::Relay,
             GrantAccess::Api(_) => Self::Api,
             GrantAccess::CommitSigning(_) => Self::CommitSigning,
+            GrantAccess::GithubToken(_) => Self::GithubToken,
         }
     }
 
@@ -42,6 +45,7 @@ impl LiveKind {
             Self::Relay => "relay",
             Self::Api => "api",
             Self::CommitSigning => "commit-signing",
+            Self::GithubToken => "github-token",
         }
     }
 }

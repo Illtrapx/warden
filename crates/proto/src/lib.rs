@@ -59,6 +59,7 @@ macro_rules! string_newtype {
 
 pub mod commit_signing;
 pub mod doctor;
+pub mod github_token;
 mod grant;
 mod names;
 mod session;
@@ -74,6 +75,7 @@ pub use self::names::{AgentName, Goal, SecretName, TargetName, UnixUser};
 pub use self::session::{SessionLabel, SessionLink};
 pub use self::window::Window;
 pub use commit_signing::CommitSigningGrant;
+pub use github_token::GithubTokenGrant;
 
 /// 16 bytes of OS randomness as 32 lowercase hex characters.
 ///
@@ -142,6 +144,9 @@ pub enum Access {
     /// Commit signing by the broker's key, in the agent's name.
     #[serde(rename = "commit_signing")]
     CommitSigning {},
+    /// A short-lived GitHub App installation token, minted by the broker.
+    #[serde(rename = "github_token")]
+    GithubToken {},
 }
 
 /// The methods that cannot modify anything on the server.

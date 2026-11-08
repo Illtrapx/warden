@@ -41,6 +41,7 @@ pub fn history(entries: &[HistoryEntry], hosts: &LinkHosts) -> Markup {
                             Access::Ssh { target, user, .. } => format!("{user}@{target}"),
                             Access::Api { secret, .. } => format!("api:{secret}"),
                             Access::CommitSigning {} => "commit signing".to_owned(),
+                            Access::GithubToken {} => "github token".to_owned(),
                         };
                         // On a phone each row is a card; `data-label` names
                         // the cell there, where the header row is hidden.

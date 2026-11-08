@@ -169,6 +169,11 @@ impl Requests {
                     "commit signing".to_owned(),
                 )
             }
+            Access::GithubToken {} => {
+                return Err(RequestError::Rejected(
+                    warden_broker_proto::github_token::NOT_CONFIGURED.to_owned(),
+                ));
+            }
         })
     }
 

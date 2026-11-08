@@ -42,7 +42,7 @@ pub fn elsewhere_note(grant: &GrantView, local: &[Id]) -> String {
              warden revoke {id})"
         ),
         // The broker signs under the grant: there is nothing to have on a machine.
-        GrantAccess::CommitSigning(_) => String::new(),
+        GrantAccess::CommitSigning(_) | GrantAccess::GithubToken(_) => String::new(),
     }
 }
 
@@ -69,6 +69,7 @@ pub fn broker_grant_line(grant: &GrantView, local: &[Id]) -> String {
         GrantAccess::CommitSigning(signing) => {
             format!("commit signing with {}", signing.key_fingerprint)
         }
+        GrantAccess::GithubToken(_) => "github token".to_owned(),
     };
     sanitize(&format!(
         "  {subject}  grant {}  until {}{}",
@@ -97,6 +98,7 @@ fn access_summary(access: &Access) -> String {
             }
         }
         Access::CommitSigning {} => "commit signing".to_owned(),
+        Access::GithubToken {} => "github token".to_owned(),
     }
 }
 
@@ -179,6 +181,10 @@ fn plan(grant_id: &Id, live: Vec<GrantView>, local: &[Id]) -> Result<Collected, 
              so it needs nothing on this machine. Once `warden setup git` has run here, `git \
              commit` uses it"
         ))),
+        GrantAccess::GithubToken(_) => Err(format!(
+            "grant {grant_id} cannot be collected: this warden does not support github token \
+             grants yet"
+        )),
     }
 }
 

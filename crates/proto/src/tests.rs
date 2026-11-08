@@ -1,5 +1,7 @@
 //! Unit tests of the wire types.
 
+use crate::GithubTokenGrant;
+use crate::github_token::{GithubTokenResponse, PERMISSIONS};
 use crate::{
     Access, AgentName, ApiGrant, CreateRequest, Fingerprint, Goal, GrantAccess, GrantView, Id,
     InfoResponse, ProxyRequest, ProxyResponse, RelayGrant, RequestStatus, SecretName, SessionLabel,
@@ -490,5 +492,81 @@ fn create_request_wire_shape() {
     assert_eq!(
         serde_json::from_str::<CreateRequest>(&json).unwrap(),
         sample_request()
+    );
+}
+
+#[test]
+fn github_token_access_serde_shape() {
+    let access = Access::GithubToken {};
+    let json = serde_json::to_string(&access).unwrap();
+    assert_eq!(json, r#"{"kind":"github_token"}"#);
+    assert_eq!(serde_json::from_str::<Access>(&json).unwrap(), access);
+}
+
+#[test]
+fn github_token_grant_serde_shape() {
+    let grant = GrantAccess::GithubToken(GithubTokenGrant {
+        app_id: "12345".to_owned(),
+        installation_id: 678,
+        digest: "ab12".to_owned(),
+    });
+    let value = serde_json::to_value(&grant).unwrap();
+    assert_eq!(
+        value,
+        serde_json::json!({
+            "kind": "github_token",
+            "app_id": "12345",
+            "installation_id": 678,
+            "digest": "ab12",
+        })
+    );
+    assert_eq!(serde_json::from_value::<GrantAccess>(value).unwrap(), grant);
+}
+
+#[test]
+fn github_token_window_parser() {
+    for text in ["1d", "7d", "30d"] {
+        let window = Window::github_token(text).unwrap();
+        assert!(window.is_github_token());
+        assert!(Window::GITHUB_TOKEN.contains(&window));
+    }
+    for text in ["90d", "4h", "30D", " 30d", ""] {
+        assert!(Window::github_token(text).is_err(), "{text:?}");
+    }
+    assert!(!Window::D90.is_github_token());
+    assert!(!Window::H4.is_github_token());
+    assert_eq!(Window::GITHUB_TOKEN_DEFAULT, Window::D30);
+}
+
+#[test]
+fn github_token_permissions_are_fixed() {
+    assert_eq!(
+        PERMISSIONS,
+        [
+            ("contents", "write"),
+            ("pull_requests", "write"),
+            ("issues", "write"),
+            ("metadata", "read"),
+        ]
+    );
+}
+
+#[test]
+fn github_token_response_debug_redacts() {
+    let response = GithubTokenResponse {
+        token: "ghs_supersecretvalue".to_owned(),
+        expires_at: 1_700_000_000,
+        grant_id: Id::random(),
+    };
+    let debug = format!("{response:?}");
+    assert!(!debug.contains("ghs_supersecretvalue"), "{debug}");
+    assert!(debug.contains("<redacted>"));
+    let json = serde_json::to_string(&response).unwrap();
+    assert!(json.contains(r#""token":"ghs_supersecretvalue""#));
+    assert_eq!(
+        serde_json::from_str::<GithubTokenResponse>(&json)
+            .unwrap()
+            .token,
+        "ghs_supersecretvalue"
     );
 }

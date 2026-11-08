@@ -407,9 +407,10 @@ async fn api_grant_status(
     } else {
         match view.access {
             GrantAccess::Api(grant) => Ok(grant),
-            GrantAccess::Ssh(_) | GrantAccess::Relay(_) | GrantAccess::CommitSigning(_) => {
-                Err(Unusable::NotApi)
-            }
+            GrantAccess::Ssh(_)
+            | GrantAccess::Relay(_)
+            | GrantAccess::CommitSigning(_)
+            | GrantAccess::GithubToken(_) => Err(Unusable::NotApi),
         }
     })
 }

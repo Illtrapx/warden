@@ -143,6 +143,7 @@ fn access_line(request: &CreateRequest, host: &str, port: u16) -> String {
         Access::Ssh { target, user, .. } => format!("ssh {user}@{target} ({host}:{port})"),
         Access::Api { secret, .. } => format!("api {secret}"),
         Access::CommitSigning {} => "commit signing".to_owned(),
+        Access::GithubToken {} => "github token".to_owned(),
     }
 }
 
@@ -259,6 +260,7 @@ fn grant_access(grant: &ActiveGrant) -> Markup {
         GrantAccess::CommitSigning(signing) => {
             commit_signing::grant_access(&signing.key_fingerprint)
         }
+        GrantAccess::GithubToken(_) => html! { span { "github token" } },
     }
 }
 
