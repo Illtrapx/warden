@@ -2,6 +2,7 @@
 //! replaces, in the same transaction, so that revoking the grant on the owner's
 //! screen really does stop that agent's access.
 
+use sqlx::sqlite::SqliteRow;
 use sqlx::{Sqlite, Transaction};
 use warden_broker_proto::{AgentName, GrantAccess, Id};
 
@@ -55,15 +56,16 @@ pub(super) async fn end_renewed(
 }
 
 impl Requests {
-    /// The entries for ending the active grants of `kind` that a new grant of
-    /// `agent` replaces. Written with the approval, before anything changes.
-    pub(super) async fn renewal_events(
+    /// `agent`'s active grants of `kind`, longest lasting first: not revoked and not
+    /// past their end, as read by every use of a grant and every replacement of one.
+    /// Rows of `id`, `not_after` and `view`.
+    pub(super) async fn active_rows(
         &self,
         agent: &AgentName,
         kind: &str,
-    ) -> Result<Vec<AuditEvent>, RequestError> {
-        sqlx::query(
-            "SELECT id FROM grants \
+    ) -> Result<Vec<SqliteRow>, RequestError> {
+        Ok(sqlx::query(
+            "SELECT id, not_after, view FROM grants \
              WHERE agent = ?1 AND revoked_at IS NULL AND not_after > ?2 \
              AND json_extract(view, '$.access.kind') = ?3 \
              ORDER BY not_after DESC, id",
@@ -72,14 +74,25 @@ impl Requests {
         .bind(self.clock.now())
         .bind(kind)
         .fetch_all(&self.pool)
-        .await?
-        .iter()
-        .map(|row| {
-            Ok(AuditEvent::GrantRevoked {
-                grant_id: parse(row, "id")?,
-                by: RENEWED.to_owned(),
+        .await?)
+    }
+
+    /// The entries for ending the active grants of `kind` that a new grant of
+    /// `agent` replaces. Written with the approval, before anything changes.
+    pub(super) async fn renewal_events(
+        &self,
+        agent: &AgentName,
+        kind: &str,
+    ) -> Result<Vec<AuditEvent>, RequestError> {
+        self.active_rows(agent, kind)
+            .await?
+            .iter()
+            .map(|row| {
+                Ok(AuditEvent::GrantRevoked {
+                    grant_id: parse(row, "id")?,
+                    by: RENEWED.to_owned(),
+                })
             })
-        })
-        .collect()
+            .collect()
     }
 }

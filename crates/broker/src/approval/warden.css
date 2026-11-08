@@ -102,6 +102,7 @@ font-weight:700;font-size:15px;font-family:inherit;cursor:pointer}
 .live-list{margin:0;padding:0;list-style:none;display:flex;flex-direction:column;gap:8px;color:var(--muted);font-size:14px}
 .live-list li{display:flex;flex-wrap:wrap;gap:0 14px;min-width:0;overflow-wrap:anywhere}
 .live-list .nowrap{white-space:nowrap}
+code.perm{white-space:nowrap}
 .live-list code{color:var(--ink);word-break:normal;overflow-wrap:anywhere;min-width:0}
 /* Pending: a card per request, Approve and Deny the same size at every width. */
 .pending .meta{display:flex;flex-wrap:wrap;gap:6px 14px;color:var(--muted);font-size:14px}

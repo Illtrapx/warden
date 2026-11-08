@@ -63,17 +63,12 @@ impl Requests {
         &self,
         agent: &AgentName,
     ) -> Result<Option<ActiveGithubToken>, RequestError> {
-        let row = sqlx::query(
-            "SELECT id, view FROM grants \
-             WHERE agent = ?1 AND revoked_at IS NULL AND not_after > ?2 \
-             AND json_extract(view, '$.access.kind') = 'github_token' \
-             ORDER BY not_after DESC, id",
-        )
-        .bind(agent.as_str())
-        .bind(self.clock.now())
-        .fetch_optional(&self.pool)
-        .await?;
-        let Some(row) = row else {
+        let Some(row) = self
+            .active_rows(agent, "github_token")
+            .await?
+            .into_iter()
+            .next()
+        else {
             return Ok(None);
         };
         let view: String = row.try_get("view")?;

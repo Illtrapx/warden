@@ -24,7 +24,7 @@ fn permissions() -> Markup {
             "Permissions: "
             @for (i, (name, level)) in PERMISSIONS.into_iter().enumerate() {
                 @if i > 0 { ", " }
-                code { (name) ": " (level) }
+                code.perm { (name) ": " (level) }
             }
         }
     }

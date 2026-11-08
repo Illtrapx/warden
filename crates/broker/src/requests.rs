@@ -391,8 +391,8 @@ pub struct Requests {
     limits: RequestLimits,
     /// What has been recorded and told about refusals under `limits`.
     refusals: Arc<Refusals>,
-    /// Longest commit signing grant the server allows. The only grant allowed to
-    /// outlast 4 hours: see `docs/threat-model.md`.
+    /// Longest commit signing grant the server allows. With GitHub token grants, the
+    /// only grants allowed to outlast 4 hours: see `docs/threat-model.md`.
     commit_signing_max: Window,
     /// Signatures per commit signing grant per UTC day.
     commit_signing_per_day: u32,

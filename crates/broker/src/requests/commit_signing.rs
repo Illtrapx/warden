@@ -35,13 +35,6 @@ pub const SIGNATURES_PER_DAY: u32 = 5000;
 /// Refusals recorded one by one per agent per minute; the rest are counted.
 const REFUSALS_PER_MINUTE: u32 = 30;
 
-/// An agent's active commit signing grants (`?1`, at `?2`), longest lasting first.
-const ACTIVE_FOR_AGENT: &str = "\
-    SELECT id, not_after, view FROM grants \
-    WHERE agent = ?1 AND revoked_at IS NULL AND not_after > ?2 \
-    AND json_extract(view, '$.access.kind') = 'commit_signing' \
-    ORDER BY not_after DESC, id";
-
 /// Commit signing grants ending soon at `?1`, whose owner was not told yet and was
 /// not tried since `?2`.
 const ENDING_SOON: &str = "\
@@ -287,12 +280,12 @@ impl Requests {
         &self,
         agent: &AgentName,
     ) -> Result<Option<ActiveCommitSigning>, RequestError> {
-        let row = sqlx::query(ACTIVE_FOR_AGENT)
-            .bind(agent.as_str())
-            .bind(self.clock.now())
-            .fetch_optional(&self.pool)
-            .await?;
-        let Some(row) = row else {
+        let Some(row) = self
+            .active_rows(agent, "commit_signing")
+            .await?
+            .into_iter()
+            .next()
+        else {
             return Ok(None);
         };
         let view: String = row.try_get("view")?;

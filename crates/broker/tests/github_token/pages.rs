@@ -2,8 +2,9 @@
 
 use axum::http::StatusCode;
 use serde_json::json;
-use warden_broker::testkit::{TestBroker, github_app_key};
+use warden_broker::testkit::TestBroker;
 use warden_broker_proto::Window;
+use warden_broker_proto::github_token::NOT_CONFIGURED;
 
 use super::configured;
 
@@ -90,11 +91,22 @@ async fn destination_changed_between_page_and_approve() {
             .contains("No active grants")
     );
 
-    // The App removed altogether: nothing to approve either.
+    // The App removed altogether: a fresh ceremony cannot start, and nothing is granted.
     broker.backend.set_github_app(None);
-    let finish = broker.finish_approval(&token, &ceremony, &credential).await;
-    assert_ne!(finish.status, StatusCode::OK, "{}", finish.body);
-    broker.backend.set_github_app(Some(github_app_key().0));
+    let begin = broker.begin_approval(&token, Window::D7).await;
+    assert_eq!(begin.status, StatusCode::BAD_REQUEST, "{}", begin.body);
+    assert!(
+        begin.body.contains(NOT_CONFIGURED),
+        "the refusal names the cause: {}",
+        begin.body
+    );
+    assert!(
+        broker
+            .get("/grants")
+            .await
+            .body
+            .contains("No active grants")
+    );
 }
 
 #[tokio::test]
