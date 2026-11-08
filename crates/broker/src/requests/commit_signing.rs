@@ -5,9 +5,6 @@
 //! the same transaction, so that revoking the grant on the owner's screen really
 //! does stop that agent's signatures.
 
-use std::collections::HashMap;
-use std::sync::{Mutex, MutexGuard, PoisonError};
-
 use sqlx::Row as _;
 use url::Url;
 use warden_broker_proto::{
@@ -32,9 +29,6 @@ const NOTICE_RETRY_SECS: i64 = 3600;
 /// disk in the life of a grant.
 pub const SIGNATURES_PER_DAY: u32 = 5000;
 
-/// Refusals recorded one by one per agent per minute; the rest are counted.
-const REFUSALS_PER_MINUTE: u32 = 30;
-
 /// Commit signing grants ending soon at `?1`, whose owner was not told yet and was
 /// not tried since `?2`.
 const ENDING_SOON: &str = "\
@@ -52,65 +46,6 @@ pub struct ActiveCommitSigning {
     pub grant_id: Id,
     /// What was approved.
     pub grant: CommitSigningGrant,
-}
-
-/// One agent's refusals in the current minute.
-#[derive(Debug, Default)]
-struct RefusalMinute {
-    started_at: i64,
-    written: u32,
-    held: u64,
-}
-
-/// The refusals to sign (or, for another instance, to mint) of every agent.
-/// Enrolled agents are the only callers that get this far, so this holds an entry per enrolled agent at most. In memory: a
-/// restart can at worst lose the count of a minute.
-#[derive(Debug, Default)]
-pub(super) struct SigningRefusals {
-    agents: Mutex<HashMap<AgentName, RefusalMinute>>,
-}
-
-impl SigningRefusals {
-    fn lock(&self) -> MutexGuard<'_, HashMap<AgentName, RefusalMinute>> {
-        // Every update is a few steps that cannot panic, and at worst this
-        // miscounts: the refusal itself has already been decided.
-        self.agents.lock().unwrap_or_else(PoisonError::into_inner)
-    }
-
-    /// Count a refusal of `agent` at `now`. Whether to record it in full; if not,
-    /// it is held for a refusals-held entry.
-    pub(super) fn note(&self, agent: &AgentName, now: i64) -> bool {
-        let mut agents = self.lock();
-        let minute = agents.entry(agent.clone()).or_default();
-        // A clock set back starts a new minute too.
-        if now < minute.started_at || now - minute.started_at >= 60 {
-            minute.started_at = now;
-            minute.written = 0;
-        }
-        if minute.written < REFUSALS_PER_MINUTE {
-            minute.written += 1;
-            true
-        } else {
-            minute.held = minute.held.saturating_add(1);
-            false
-        }
-    }
-
-    /// Take every count held back.
-    pub(super) fn take_held(&self) -> Vec<(AgentName, u64)> {
-        self.lock()
-            .iter_mut()
-            .filter(|(_, minute)| minute.held > 0)
-            .map(|(agent, minute)| (agent.clone(), std::mem::take(&mut minute.held)))
-            .collect()
-    }
-
-    /// Put back `count`, which could not be written.
-    pub(super) fn restore(&self, agent: &AgentName, count: u64) {
-        let mut agents = self.lock();
-        let minute = agents.entry(agent.clone()).or_default();
-        minute.held = minute.held.saturating_add(count);
-    }
 }
 
 /// Whether a commit signing grant may have `window`, under the server's `max`.
@@ -383,32 +318,30 @@ impl Requests {
         reason: String,
         payload_sha256: Option<String>,
     ) {
-        if !self.signing_refusals.note(agent, self.clock.now()) {
-            return;
-        }
         let event = AuditEvent::CommitSigningRefused {
             agent: agent.clone(),
             grant_id,
             reason,
             payload_sha256,
         };
-        if let Err(e) = self.audit.append(event).await {
-            tracing::error!(agent = %agent, error = %e, "could not audit a refusal to sign");
-        }
+        self.signing_refusals
+            .record(
+                &self.audit,
+                agent,
+                self.clock.now(),
+                event,
+                "a refusal to sign",
+            )
+            .await;
     }
 
     /// Write the refusals to sign held back since the last time.
     pub(super) async fn flush_signing_refusals(&self) {
-        for (agent, count) in self.signing_refusals.take_held() {
-            let event = AuditEvent::CommitSigningRefusalsHeld {
-                agent: agent.clone(),
-                count,
-            };
-            if let Err(e) = self.audit.append(event).await {
-                tracing::error!(agent = %agent, error = %e, "could not audit refusals to sign");
-                self.signing_refusals.restore(&agent, count);
-            }
-        }
+        self.signing_refusals
+            .flush(&self.audit, "refusals to sign", |agent, count| {
+                AuditEvent::CommitSigningRefusalsHeld { agent, count }
+            })
+            .await;
     }
 
     /// Tell the owner about every commit signing grant about to end. A grant is
@@ -517,48 +450,7 @@ fn time_left(secs: i64) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{REFUSALS_PER_MINUTE, SigningRefusals, time_left};
-    use warden_broker_proto::AgentName;
-
-    fn agent(name: &str) -> AgentName {
-        name.parse().unwrap()
-    }
-
-    #[test]
-    fn refusals_beyond_the_limit_are_counted_not_written() {
-        let refusals = SigningRefusals::default();
-        let bot = agent("bot");
-        assert!(refusals.note(&bot, 1000));
-        for _ in 1..REFUSALS_PER_MINUTE {
-            assert!(refusals.note(&bot, 1000));
-        }
-        assert!(!refusals.note(&bot, 1059));
-        assert!(!refusals.note(&bot, 1059));
-        assert_eq!(refusals.take_held(), [(bot.clone(), 2)]);
-        assert_eq!(refusals.take_held(), []);
-        // Another agent has its own allowance, and the next minute starts afresh.
-        assert!(refusals.note(&agent("other"), 1059));
-        assert!(refusals.note(&bot, 1060));
-    }
-
-    #[test]
-    fn a_count_that_could_not_be_written_is_kept() {
-        let refusals = SigningRefusals::default();
-        let bot = agent("bot");
-        refusals.restore(&bot, 5);
-        assert_eq!(refusals.take_held(), [(bot, 5)]);
-    }
-
-    #[test]
-    fn a_clock_set_back_starts_a_new_minute() {
-        let refusals = SigningRefusals::default();
-        let bot = agent("bot");
-        for _ in 0..REFUSALS_PER_MINUTE {
-            assert!(refusals.note(&bot, 1000));
-        }
-        assert!(!refusals.note(&bot, 1000));
-        assert!(refusals.note(&bot, 900));
-    }
+    use super::time_left;
 
     #[test]
     fn time_left_reads_as_people_say_it() {

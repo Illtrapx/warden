@@ -847,7 +847,7 @@ A grant is:
 |-------|------|---------|
 | `grant_id` | string | Grant id (32 hex). |
 | `not_before`, `not_after` | integer | Validity, Unix seconds. |
-| `access` | object | What the grant allows, tagged by `kind`: `ssh`, `relay`, `api` or `commit_signing`. |
+| `access` | object | What the grant allows, tagged by `kind`: `ssh`, `relay`, `api`, `commit_signing` or `github_token`. |
 
 Keep a record of each grant (id, kind, `not_after`) so you can use and
 revoke it. Drop it when it expires; `GET /v1/grants` is the broker's view.

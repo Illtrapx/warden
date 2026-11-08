@@ -10,7 +10,6 @@ use axum::Json;
 use axum::extract::State;
 use axum::http::StatusCode;
 use secrecy::ExposeSecret as _;
-use serde::Deserialize;
 use warden_broker_proto::github_token::{GithubTokenResponse, NO_ACTIVE_GRANT, PERMISSIONS};
 use warden_broker_proto::{AgentName, Id};
 
@@ -33,11 +32,6 @@ const GITHUB_UNAVAILABLE: &str = "GitHub could not issue a token; try again late
 const REVOKED_DURING: &str = "grant revoked during the call";
 const EXPIRED_DURING: &str = "grant expired during the call";
 
-/// The request body: an empty object, and nothing else.
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-pub(super) struct Empty {}
-
 /// `POST /v1/github-token`: mint a token under the agent's grant. Runs on its own
 /// task, so that a disconnecting agent can neither stop it halfway nor keep it out
 /// of the audit log. A body that is not `{}` is a refusal like any other, and
@@ -45,9 +39,19 @@ pub(super) struct Empty {}
 pub(super) async fn mint(
     State(state): State<AppState>,
     AuthedAgent(agent): AuthedAgent,
-    body: Result<ApiJson<Empty>, Failure>,
+    body: Result<ApiJson<serde_json::Map<String, serde_json::Value>>, Failure>,
 ) -> Result<Json<GithubTokenResponse>, Failure> {
-    let body = body.map(|ApiJson(Empty {})| ());
+    // An empty object and nothing else: not an array, and no field.
+    let body = body.and_then(|ApiJson(fields)| {
+        if fields.is_empty() {
+            Ok(())
+        } else {
+            Err(refused(
+                StatusCode::BAD_REQUEST,
+                "the request body is not valid",
+            ))
+        }
+    });
     tokio::spawn(audited(state, agent, body))
         .await
         .map_err(|_| Failure::Request(RequestError::Internal("minting task failed")))?

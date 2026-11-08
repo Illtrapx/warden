@@ -44,16 +44,17 @@ mod github_token;
 mod limits;
 mod link_hosts;
 mod pending;
+mod refusal_throttle;
 mod renewal;
 
 pub use self::bus::StatusBus;
-use self::commit_signing::SigningRefusals;
 pub use self::commit_signing::{ActiveCommitSigning, SIGNATURES_PER_DAY};
 pub use self::github_token::ActiveGithubToken;
 use self::limits::Refusals;
 pub use self::limits::{LimitRefusal, RequestLimits};
 pub use self::link_hosts::LinkHosts;
 pub use self::pending::PendingEntry;
+use self::refusal_throttle::RefusalThrottle;
 
 mod create;
 mod decide;
@@ -399,9 +400,9 @@ pub struct Requests {
     /// Longest GitHub token grant the server allows.
     github_token_max: Window,
     /// What has been recorded of refusals to sign.
-    signing_refusals: Arc<SigningRefusals>,
+    signing_refusals: Arc<RefusalThrottle>,
     /// What has been recorded of refusals to mint GitHub tokens.
-    github_refusals: Arc<SigningRefusals>,
+    github_refusals: Arc<RefusalThrottle>,
     /// Hosts a request may link to.
     link_hosts: LinkHosts,
 }

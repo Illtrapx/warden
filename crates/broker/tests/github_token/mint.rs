@@ -152,16 +152,21 @@ async fn mint_after_the_window_is_403() {
 #[tokio::test]
 async fn a_body_that_is_not_an_empty_object_is_refused_and_audited() {
     let (broker, upstream, key, _) = granted().await;
-    let resp = broker
-        .api_post_json(&key, "/v1/github-token", &json!({"repositories": ["x"]}))
-        .await;
-    assert_refused(
-        &broker,
-        &resp,
-        StatusCode::BAD_REQUEST,
-        "the request body is not valid",
-    );
-    assert!(!resp.body.contains("repositories"), "{}", resp.body);
+    for body in [
+        json!({"repositories": ["x"]}),
+        json!([]),
+        json!("{}"),
+        json!(null),
+    ] {
+        let resp = broker.api_post_json(&key, "/v1/github-token", &body).await;
+        assert_refused(
+            &broker,
+            &resp,
+            StatusCode::BAD_REQUEST,
+            "the request body is not valid",
+        );
+        assert!(!resp.body.contains("repositories"), "{}", resp.body);
+    }
     assert!(upstream.received().is_empty());
 }
 
@@ -289,6 +294,7 @@ async fn audit_never_contains_token_or_jwt() {
     );
     // The JWT really was sent, so the scan below could have caught it.
     let sent = upstream.received();
+    assert_eq!(sent.len(), 2);
     assert!(sent.iter().all(|call| {
         call.headers["authorization"]
             .to_str()

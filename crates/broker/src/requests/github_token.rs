@@ -93,30 +93,28 @@ impl Requests {
         grant_id: Option<Id>,
         reason: String,
     ) {
-        if !self.github_refusals.note(agent, self.clock.now()) {
-            return;
-        }
         let event = AuditEvent::GithubTokenRefused {
             agent: agent.clone(),
             grant_id,
             reason,
         };
-        if let Err(e) = self.audit.append(event).await {
-            tracing::error!(agent = %agent, error = %e, "could not audit a refusal to mint");
-        }
+        self.github_refusals
+            .record(
+                &self.audit,
+                agent,
+                self.clock.now(),
+                event,
+                "a refusal to mint",
+            )
+            .await;
     }
 
     /// Write the refusals to mint held back since the last time.
     pub(super) async fn flush_github_refusals(&self) {
-        for (agent, count) in self.github_refusals.take_held() {
-            let event = AuditEvent::GithubTokenRefusalsHeld {
-                agent: agent.clone(),
-                count,
-            };
-            if let Err(e) = self.audit.append(event).await {
-                tracing::error!(agent = %agent, error = %e, "could not audit refusals to mint");
-                self.github_refusals.restore(&agent, count);
-            }
-        }
+        self.github_refusals
+            .flush(&self.audit, "refusals to mint", |agent, count| {
+                AuditEvent::GithubTokenRefusalsHeld { agent, count }
+            })
+            .await;
     }
 }
