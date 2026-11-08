@@ -26,7 +26,9 @@ use warden_broker_proto::{
 use crate::agents::AgentError;
 use crate::audit::{AuditError, AuditLog};
 use crate::notify::Notifier;
-use crate::policy::{ApiSecretPolicy, CommitSigningPolicy, PolicyError, SecretBackend, SshTarget};
+use crate::policy::{
+    ApiSecretPolicy, CommitSigningPolicy, GithubTokenPolicy, PolicyError, SecretBackend, SshTarget,
+};
 use crate::proxy::{CallSlots, ProxyLimits};
 use crate::relay::{LiveSessions, RelayEndpoint};
 
@@ -38,13 +40,16 @@ pub(crate) use self::transition::{begin, note_if_not_applied, record};
 
 mod bus;
 mod commit_signing;
+mod github_token;
 mod limits;
 mod link_hosts;
 mod pending;
+mod renewal;
 
 pub use self::bus::StatusBus;
 use self::commit_signing::SigningRefusals;
 pub use self::commit_signing::{ActiveCommitSigning, SIGNATURES_PER_DAY};
+pub use self::github_token::ActiveGithubToken;
 use self::limits::Refusals;
 pub use self::limits::{LimitRefusal, RequestLimits};
 pub use self::link_hosts::LinkHosts;
@@ -227,6 +232,8 @@ pub enum Destination {
     Api(ApiSecretPolicy),
     /// Commit signing by the broker's key.
     CommitSigning(CommitSigningPolicy),
+    /// GitHub App installation tokens.
+    GithubToken(GithubTokenPolicy),
 }
 
 impl Destination {
@@ -240,6 +247,7 @@ impl Destination {
             Self::Ssh(target) => target.destination_digest(),
             Self::Api(policy) => policy.destination_digest(),
             Self::CommitSigning(policy) => policy.destination_digest(),
+            Self::GithubToken(policy) => policy.destination_digest(),
         }
     }
 
@@ -250,6 +258,7 @@ impl Destination {
             Self::Ssh(target) => target.max_window,
             Self::Api(policy) => policy.max_window,
             Self::CommitSigning(policy) => policy.max_window,
+            Self::GithubToken(policy) => policy.max_window,
         }
     }
 
@@ -263,6 +272,9 @@ impl Destination {
             Self::Api(policy) => format!("secret {}", policy.name),
             Self::CommitSigning(policy) => {
                 return commit_signing::check_window(window, policy.max_window);
+            }
+            Self::GithubToken(policy) => {
+                return github_token::check_window(window, policy.max_window);
             }
         };
         check_window(window, self.max_window(), &subject)
@@ -384,6 +396,8 @@ pub struct Requests {
     commit_signing_max: Window,
     /// Signatures per commit signing grant per UTC day.
     commit_signing_per_day: u32,
+    /// Longest GitHub token grant the server allows.
+    github_token_max: Window,
     /// What has been recorded of refusals to sign.
     signing_refusals: Arc<SigningRefusals>,
     /// Hosts a request may link to.
@@ -431,6 +445,7 @@ impl Requests {
             refusals: Arc::default(),
             commit_signing_max: Window::COMMIT_SIGNING_DEFAULT,
             commit_signing_per_day: SIGNATURES_PER_DAY,
+            github_token_max: Window::GITHUB_TOKEN_DEFAULT,
             signing_refusals: Arc::default(),
             link_hosts: LinkHosts::default(),
         }

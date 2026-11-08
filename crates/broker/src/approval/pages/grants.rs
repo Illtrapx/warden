@@ -8,7 +8,8 @@ use super::end_states::end_state;
 use super::format::{bytes, idle_label};
 use super::stated::stated_lines;
 use super::{
-    Chip, Nav, clock, commit_signing, empty_icon, fingerprint_forms, grant_access, layout,
+    Chip, Nav, clock, commit_signing, empty_icon, ends, fingerprint_forms, github_token,
+    grant_access, layout,
 };
 use crate::requests::{ActiveGrant, LinkHosts};
 
@@ -82,6 +83,8 @@ fn live_area(grant: &ActiveGrant, live: Option<&LiveGrant<'_>>) -> Markup {
                 p.detail { "Certificate logins are not visible to warden, so this does not show whether it was used." }
             } @else if kind == LiveKind::CommitSigning {
                 (commit_signing::live_note())
+            } @else if kind == LiveKind::GithubToken {
+                (github_token::live_note())
             } @else if summary.is_empty() {
                 p.detail { (if kind == LiveKind::Relay { "No sessions open" } else { "No calls in flight" }) }
             } @else {
@@ -164,8 +167,11 @@ pub fn grants(
                         (stated_lines(&grant.request, hosts))
                         div.meta {
                             span { "Fingerprint " (fingerprint_forms(&grant.fingerprint)) }
-                            @if matches!(grant.access, GrantAccess::CommitSigning(_)) {
-                                (commit_signing::ends(grant.not_after, now))
+                            @if matches!(
+                                grant.access,
+                                GrantAccess::CommitSigning(_) | GrantAccess::GithubToken(_)
+                            ) {
+                                (ends(grant.not_after, now))
                             } @else {
                                 span {
                                     "Ends " (clock(grant.not_after))

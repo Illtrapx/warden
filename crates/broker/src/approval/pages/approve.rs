@@ -68,11 +68,12 @@ pub fn approve(view: &PendingView, hosts: &LinkHosts, now: i64) -> Markup {
                                     Destination::Ssh(_) => "target",
                                     Destination::Api(_) => "secret",
                                     Destination::CommitSigning(_) => "signing key",
+                                    Destination::GithubToken(_) => "GitHub App",
                                 }) "."
                             }
                         }
                         div.seg {
-                            @for window in windows_for(&view.destination).into_iter().filter(|w| *w <= max) {
+                            @for window in windows_for(&view.destination).iter().copied().filter(|w| *w <= max) {
                                 @let id = format!("window-{}", window_label(window));
                                 input #(id) type="radio" name="window"
                                     value=(window_label(window)) checked[window == default];

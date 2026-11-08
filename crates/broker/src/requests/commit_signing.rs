@@ -8,7 +8,7 @@
 use std::collections::HashMap;
 use std::sync::{Mutex, MutexGuard, PoisonError};
 
-use sqlx::{Row as _, Sqlite, Transaction};
+use sqlx::Row as _;
 use url::Url;
 use warden_broker_proto::{
     Access, AgentName, CommitSigningGrant, CreateRequest, Goal, GrantAccess, GrantView, Id, Window,
@@ -19,9 +19,6 @@ use super::{Destination, RequestError, Requests, Scope, approval_token, begin, p
 use crate::audit::AuditEvent;
 use crate::notify::Doorbell;
 use crate::policy::{CommitSigningKey, CommitSigningPolicy, PolicyError, check_separate_from_ca};
-
-/// Recorded as `by` for a grant ended by approving its replacement.
-const RENEWED: &str = "renewed";
 
 /// The owner hears at most this long before a grant ends, in seconds, and sooner
 /// only for a grant so short that a quarter of it is less.
@@ -129,37 +126,6 @@ pub(super) fn check_window(window: Window, max: Window) -> Result<(), String> {
         return Err("a commit signing grant lasts 1d, 7d, 30d or 90d".to_owned());
     }
     super::check_window(window, max, "commit signing")
-}
-
-/// End the other active commit signing grants of `agent` at `now`, in `tx`, which
-/// also stores `kept`, the grant replacing them. Returns their requests.
-pub(super) async fn end_renewed(
-    tx: &mut Transaction<'static, Sqlite>,
-    agent: &AgentName,
-    kept: &Id,
-    now: i64,
-) -> Result<Vec<Id>, RequestError> {
-    let requests = sqlx::query(
-        "UPDATE grants SET revoked_at = ?1 \
-         WHERE agent = ?2 AND id != ?3 AND revoked_at IS NULL AND not_after > ?1 \
-         AND json_extract(view, '$.access.kind') = 'commit_signing' \
-         RETURNING request_id",
-    )
-    .bind(now)
-    .bind(agent.as_str())
-    .bind(kept.as_str())
-    .fetch_all(&mut **tx)
-    .await?
-    .iter()
-    .map(|row| parse(row, "request_id"))
-    .collect::<Result<Vec<Id>, _>>()?;
-    for request in &requests {
-        sqlx::query("UPDATE requests SET status = 'revoked' WHERE id = ? AND status = 'approved'")
-            .bind(request.as_str())
-            .execute(&mut **tx)
-            .await?;
-    }
-    Ok(requests)
 }
 
 impl Requests {
@@ -340,27 +306,6 @@ impl Requests {
             grant_id: parse(&row, "id")?,
             grant,
         }))
-    }
-
-    /// The entries for ending the grants a new commit signing grant of `agent`
-    /// replaces. Written with the approval, before anything changes.
-    pub(super) async fn renewal_events(
-        &self,
-        agent: &AgentName,
-    ) -> Result<Vec<AuditEvent>, RequestError> {
-        sqlx::query(ACTIVE_FOR_AGENT)
-            .bind(agent.as_str())
-            .bind(self.clock.now())
-            .fetch_all(&self.pool)
-            .await?
-            .iter()
-            .map(|row| {
-                Ok(AuditEvent::GrantRevoked {
-                    grant_id: parse(row, "id")?,
-                    by: RENEWED.to_owned(),
-                })
-            })
-            .collect()
     }
 
     /// Start renewing commit signing grant `grant_id`, for the owner: a request of its

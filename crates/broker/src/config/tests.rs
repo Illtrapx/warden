@@ -89,6 +89,28 @@ fn the_commit_signing_maximum_defaults_to_30_days_and_takes_only_its_windows() {
 }
 
 #[test]
+fn config_rejects_bad_github_token_max() {
+    const VAR: &str = "WARDEN_GITHUB_TOKEN_MAX_WINDOW";
+    let with = |extra: &[(&str, &str)]| {
+        let mut vars = vec![("WARDEN_OP_CONNECT_TOKEN", SECRET)];
+        vars.extend_from_slice(extra);
+        Config::from_lookup(lookup(&vars))
+    };
+    assert_eq!(
+        with(&[]).unwrap().github_token_max_window,
+        warden_broker_proto::Window::D30
+    );
+    assert_eq!(
+        with(&[(VAR, " 7d ")]).unwrap().github_token_max_window,
+        warden_broker_proto::Window::D7
+    );
+    for bad in ["90d", "4h", ""] {
+        let err = with(&[(VAR, bad)]).unwrap_err();
+        assert!(err.to_string().contains(VAR), "{bad:?}: {err}");
+    }
+}
+
+#[test]
 fn the_daily_signature_limit_has_a_default_and_a_range() {
     const VAR: &str = "WARDEN_COMMIT_SIGNING_MAX_PER_DAY";
     let with = |extra: &[(&str, &str)]| {

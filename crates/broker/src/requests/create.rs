@@ -13,8 +13,8 @@ use super::revocation::commit_with_entries;
 use super::transition::detached;
 use super::{
     PENDING_TTL_SECS, RELAY_NOT_CONFIGURED, RequestError, Requests, Scope, approval_token, begin,
-    check_ed25519, check_window, commit_signing, limits, note_if_not_applied, parse, record,
-    sha256_hex, window_label,
+    check_ed25519, check_window, commit_signing, github_token, limits, note_if_not_applied, parse,
+    record, sha256_hex, window_label,
 };
 use crate::audit::AuditEvent;
 use crate::notify::{Doorbell, doorbell};
@@ -170,9 +170,15 @@ impl Requests {
                 )
             }
             Access::GithubToken {} => {
-                return Err(RequestError::Rejected(
-                    warden_broker_proto::github_token::NOT_CONFIGURED.to_owned(),
-                ));
+                // Does not read the key: any enrolled agent can get this far.
+                if !self.backend.has_github_app().await? {
+                    return Err(RequestError::Rejected(
+                        warden_broker_proto::github_token::NOT_CONFIGURED.to_owned(),
+                    ));
+                }
+                github_token::check_window(req.window, self.github_token_max)
+                    .map_err(RequestError::Rejected)?;
+                (format!("{agent}|github_token"), "github token".to_owned())
             }
         })
     }

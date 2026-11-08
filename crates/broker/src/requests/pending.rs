@@ -157,11 +157,7 @@ impl Requests {
             Access::CommitSigning {} => {
                 Destination::CommitSigning(self.approvable_commit_signing_policy().await?)
             }
-            Access::GithubToken {} => {
-                return Err(RequestError::Rejected(
-                    warden_broker_proto::github_token::NOT_CONFIGURED.to_owned(),
-                ));
-            }
+            Access::GithubToken {} => Destination::GithubToken(self.github_token_policy().await?),
         })
     }
 

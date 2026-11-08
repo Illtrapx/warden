@@ -18,6 +18,7 @@ mod commit_signing;
 mod end_states;
 mod enroll;
 mod format;
+mod github_token;
 mod grants;
 mod history;
 mod pending;
@@ -31,7 +32,7 @@ pub use self::approve::approve;
 use self::end_states::{Chip, empty_icon, end_state_parts};
 pub use self::end_states::{cancelled, internal_error, not_found, not_pending, unavailable};
 pub use self::enroll::enroll;
-use self::format::{clock, utc_parts};
+use self::format::{clock, ends, utc_parts};
 pub use self::grants::grants;
 pub use self::history::history;
 pub use self::pending::pending;
@@ -233,6 +234,9 @@ fn destination_access(request: &CreateRequest, destination: &Destination) -> Mar
             }
         },
         Destination::CommitSigning(policy) => commit_signing::access(&policy.key_fingerprint),
+        Destination::GithubToken(policy) => {
+            github_token::access(&policy.app_id, policy.installation_id)
+        }
     }
 }
 
@@ -260,7 +264,9 @@ fn grant_access(grant: &ActiveGrant) -> Markup {
         GrantAccess::CommitSigning(signing) => {
             commit_signing::grant_access(&signing.key_fingerprint)
         }
-        GrantAccess::GithubToken(_) => html! { span { "github token" } },
+        GrantAccess::GithubToken(token) => {
+            github_token::grant_access(&token.app_id, token.installation_id)
+        }
     }
 }
 
@@ -279,9 +285,10 @@ const fn window_words(window: Window) -> &'static str {
 }
 
 /// The windows a grant of `destination` can have, shortest first.
-const fn windows_for(destination: &Destination) -> [Window; 4] {
+const fn windows_for(destination: &Destination) -> &'static [Window] {
     match destination {
-        Destination::CommitSigning(_) => Window::COMMIT_SIGNING,
-        Destination::Ssh(_) | Destination::Api(_) => WINDOWS,
+        Destination::CommitSigning(_) => &Window::COMMIT_SIGNING,
+        Destination::GithubToken(_) => &Window::GITHUB_TOKEN,
+        Destination::Ssh(_) | Destination::Api(_) => &WINDOWS,
     }
 }
