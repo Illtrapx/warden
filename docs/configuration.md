@@ -198,6 +198,7 @@ deployment exits 7 with `--strict`.
 | `connect.token-read-only` | Never. | Always: Connect does not report a token's permissions, and doctor will not attempt a write. Check how the token was created. |
 | `ssh-ca` | The CA key loads, or there is no CA item and no certificate target needs one. | Connect or the vault is not usable, or a target item cannot be read. |
 | `commit-signing` | The commit signing key loads, or none is configured, which leaves signing off. A key that cannot be used, or that is also the SSH CA key, is a failure. | Connect or the vault is not usable, or the key cannot be read. |
+| `github-app` | The GitHub App loads, or none is configured, which leaves GitHub tokens off. An item that cannot be used is a failure. | Connect or the vault is not usable, or the item cannot be read. |
 | `local.policy`, `local.entries`, `local.host-boundary` | Instead of `connect.*`, with `WARDEN_SECRET_BACKEND=local`. See [Checking it](local-backend.md#checking-it). | |
 | `notify` | Never. | Without `--send-test-notification`: nothing was sent. |
 | `notify.<channel>` | With the flag: the channel accepts the message. | Never. |

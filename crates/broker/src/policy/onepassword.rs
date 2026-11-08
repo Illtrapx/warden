@@ -14,8 +14,8 @@ use warden_broker_proto::{SecretName, TargetName};
 use zeroize::Zeroizing;
 
 use super::{
-    ApiSecretPolicy, CaKey, CommitSigningKey, PolicyError, RelayCredential, SecretBackend,
-    SecretValue, SshTarget, not_a_relay_target,
+    ApiSecretPolicy, CaKey, CommitSigningKey, GithubAppKey, PolicyError, RelayCredential,
+    SecretBackend, SecretValue, SshTarget, not_a_relay_target,
 };
 
 const TARGET_TAG: &str = "warden:ssh-target";
@@ -24,6 +24,9 @@ const CA_TAG: &str = "warden:ssh-ca";
 /// Tag of the item holding the commit signing key. Its own item, because a tag
 /// signing key would be another one: see `crate::commit_signing`.
 const COMMIT_SIGNING_TAG: &str = "warden:commit-signing";
+/// Tag of the item holding the GitHub App: its `app_id`, `installation_id` and
+/// `private_key` fields, by id.
+const GITHUB_APP_TAG: &str = "warden:github-app";
 const API_TAG: &str = "warden:api-secret";
 const MIN_CREDENTIAL_CHARS: usize = 12;
 const CA_FIELD_ID: &str = "private_key";
@@ -32,6 +35,7 @@ const TIMEOUT: Duration = Duration::from_secs(5);
 mod items;
 mod probe;
 
+use super::github_app::parse_item as parse_github_app;
 use items::invalid;
 pub(crate) use items::parse_host_port;
 pub(super) use items::{
@@ -63,7 +67,8 @@ enum KeyItemError {
     Backend(PolicyError),
 }
 
-/// The CA item, decoded so that no private-key text lives in a plain `String`.
+/// A key item (the CA, the commit signing key, the GitHub App), decoded so that no
+/// private-key text lives in a plain `String`.
 #[derive(Deserialize)]
 struct CaItem {
     #[serde(default)]
@@ -477,6 +482,31 @@ impl SecretBackend for OnePasswordConnect {
             }
             other => other,
         })
+    }
+
+    async fn github_app(&self) -> Result<GithubAppKey, PolicyError> {
+        let mut items = self.tagged(GITHUB_APP_TAG).await?;
+        let summary = match items.len() {
+            0 => return Err(PolicyError::NoGithubApp),
+            1 => items.remove(0),
+            n => {
+                return Err(PolicyError::GithubApp(format!(
+                    "{n} items are tagged \"{GITHUB_APP_TAG}\"; exactly one is required"
+                )));
+            }
+        };
+        check_id(&summary.id)?;
+        let body = self.vault_bytes(&["items", &summary.id]).await?;
+        // Never interpolate the serde error: it can quote a field value.
+        let item: CaItem = serde_json::from_slice(&body).map_err(|_| {
+            PolicyError::GithubApp(format!("item \"{}\": unreadable item", summary.title))
+        })?;
+        drop(body);
+        parse_github_app(&summary.title, &item.fields)
+    }
+
+    async fn has_github_app(&self) -> Result<bool, PolicyError> {
+        Ok(!self.tagged(GITHUB_APP_TAG).await?.is_empty())
     }
 
     async fn api_secret(&self, name: &SecretName) -> Result<ApiSecretPolicy, PolicyError> {

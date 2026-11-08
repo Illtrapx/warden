@@ -209,6 +209,10 @@ impl From<PolicyError> for RequestError {
             PolicyError::CommitSigningKey(m) => {
                 Self::Unavailable(format!("commit signing key: {m}"))
             }
+            PolicyError::NoGithubApp => {
+                Self::Rejected(warden_broker_proto::github_token::NOT_CONFIGURED.to_owned())
+            }
+            PolicyError::GithubApp(m) => Self::Unavailable(format!("GitHub App: {m}")),
         }
     }
 }

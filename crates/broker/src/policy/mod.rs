@@ -12,6 +12,7 @@ use zeroize::Zeroizing;
 
 mod api;
 mod commit_signing_key;
+mod github_app;
 pub mod local;
 pub mod onepassword;
 
@@ -21,6 +22,7 @@ pub use commit_signing_key::{
     CA_UNREADABLE, CommitSigningKey, CommitSigningPolicy, CommitSigningProbe, SAME_AS_CA,
     check_separate_from_ca,
 };
+pub use github_app::{GithubAppKey, GithubAppProbe, GithubTokenPolicy};
 pub use local::{LocalBackend, LocalProbe};
 pub use onepassword::{CaProbe, OnePasswordConnect, VaultProbe};
 
@@ -187,6 +189,12 @@ pub enum PolicyError {
     /// The commit signing key is ambiguous or unusable. Never quotes the key.
     #[error("commit signing key: {0}")]
     CommitSigningKey(String),
+    /// No GitHub App is configured.
+    #[error("no GitHub App is configured")]
+    NoGithubApp,
+    /// The GitHub App is ambiguous or unusable. Never quotes the key.
+    #[error("GitHub App: {0}")]
+    GithubApp(String),
     /// The secret backend could not be reached or answered with an error.
     #[error("secret backend unavailable: {0}")]
     Unavailable(String),
@@ -291,6 +299,21 @@ pub trait SecretBackend: Send + Sync + 'static {
     /// # Errors
     /// [`PolicyError::Unavailable`].
     async fn has_commit_signing_key(&self) -> Result<bool, PolicyError>;
+
+    /// Load the GitHub App: its ids and RSA private key, in one read of its item.
+    /// Only the 1Password backend can hold one.
+    ///
+    /// # Errors
+    /// [`PolicyError::NoGithubApp`] if none is configured,
+    /// [`PolicyError::GithubApp`] or [`PolicyError::Unavailable`].
+    async fn github_app(&self) -> Result<GithubAppKey, PolicyError>;
+
+    /// Whether a GitHub App is configured, without reading it: what an agent with no
+    /// grant can cause.
+    ///
+    /// # Errors
+    /// [`PolicyError::Unavailable`].
+    async fn has_github_app(&self) -> Result<bool, PolicyError>;
 
     /// Look up an API secret's policy by name. The whole item is validated,
     /// the credential included, but its value is not returned.
