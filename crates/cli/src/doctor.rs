@@ -48,7 +48,7 @@ pub trait Probes {
     /// What the broker says about signing for this agent.
     async fn signing_state(&self, config: &Config) -> Result<SigningState, CallError>;
     /// How git gets credentials for `https://github.com`.
-    fn github_setup(&self) -> github::GithubSetup;
+    fn github_setup(&self) -> Result<github::GithubSetup, String>;
     /// Whether this agent has an active GitHub token grant.
     async fn github_grant(&self, config: &Config) -> Result<bool, CallError>;
 }
@@ -141,7 +141,7 @@ impl Probes for Live {
         })
     }
 
-    fn github_setup(&self) -> github::GithubSetup {
+    fn github_setup(&self) -> Result<github::GithubSetup, String> {
         github::live_setup()
     }
 
@@ -258,7 +258,7 @@ async fn checks(probes: &impl Probes) -> Vec<Check> {
     };
     checks.push(git_signing_check(&git, state));
     let github = probes.github_setup();
-    let grant = if github::through_warden(&github) && credential.is_ok() {
+    let grant = if github.as_ref().is_ok_and(github::through_warden) && credential.is_ok() {
         Some(probes.github_grant(&config).await)
     } else {
         None
@@ -501,6 +501,7 @@ mod tests {
 
     fn info(id: &str, protocols: &[&str]) -> InfoResponse {
         InfoResponse {
+            github_token_max_window: None,
             protocols: protocols.iter().map(|p| (*p).to_owned()).collect(),
             audience: audience(id),
         }
@@ -556,8 +557,8 @@ mod tests {
             ready(self.accepted.clone())
         }
 
-        fn github_setup(&self) -> super::github::GithubSetup {
-            super::github::GithubSetup::default()
+        fn github_setup(&self) -> Result<super::github::GithubSetup, String> {
+            Ok(super::github::GithubSetup::default())
         }
 
         fn github_grant(&self, _config: &Config) -> impl Future<Output = Result<bool, CallError>> {

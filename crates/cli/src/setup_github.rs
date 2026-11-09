@@ -38,10 +38,31 @@ fn helper_value(exe: &str) -> String {
     format!("!{} git-credential", shell_quote(exe))
 }
 
-/// The program of a helper value in the shape [`helper_value`] writes, or `None`
-/// for any other value.
+/// The program a helper value runs as `<program> git-credential`, in the forms git
+/// runs it in: through the shell (`!` then the program single-quoted, as
+/// [`helper_value`] writes it, or plain), or as an absolute path without `!`.
+/// `None` for any other value, including a program with characters the shell would
+/// read otherwise.
 pub fn helper_program(value: &str) -> Option<String> {
-    let quoted = value.strip_prefix('!')?.strip_suffix(" git-credential")?;
+    let (shell, rest) = match value.strip_prefix('!') {
+        Some(rest) => (true, rest),
+        None => (false, value),
+    };
+    let program = rest.strip_suffix(" git-credential")?;
+    if shell && program.starts_with('\'') {
+        return unquote(program);
+    }
+    let plain = !program.is_empty()
+        && program
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || "/._-+,:@%".contains(c));
+    // Without `!`, git runs only an absolute path itself; anything else names a
+    // `git credential-<name>` command.
+    (plain && (shell || program.starts_with('/'))).then(|| program.to_owned())
+}
+
+/// `quoted` read as the shell reads single-quoted parts joined by `\'`.
+fn unquote(quoted: &str) -> Option<String> {
     let mut program = String::new();
     let mut rest = quoted;
     loop {
@@ -69,10 +90,9 @@ fn this_exe() -> Result<String> {
     printable(&exe, "this program")
 }
 
-/// The helper value `warden setup github` writes for this program, if it can tell
-/// where it is.
-pub fn this_helper() -> Option<String> {
-    this_exe().ok().map(|exe| helper_value(&exe))
+/// This program's path as `warden setup github` writes it, if it can tell.
+pub fn this_program() -> Option<String> {
+    this_exe().ok()
 }
 
 /// The `gh` wrapper running `real_gh` with a token from `exe`.
@@ -341,14 +361,24 @@ mod tests {
                 "{exe}"
             );
         }
+        for (value, program) in [
+            ("!/opt/bin/warden git-credential", "/opt/bin/warden"),
+            ("!warden git-credential", "warden"),
+            ("/opt/bin/warden git-credential", "/opt/bin/warden"),
+        ] {
+            assert_eq!(helper_program(value).as_deref(), Some(program), "{value}");
+        }
         for other in [
             "osxkeychain",
             "",
-            "!/opt/bin/warden git-credential",
+            "warden git-credential",
             "!'/opt/bin/warden' git-credential --x",
             "'/opt/bin/warden' git-credential",
             "!'/opt/bin/warden'x git-credential",
             "!'/opt/bin/warden git-credential",
+            "!/opt/my bin/warden git-credential",
+            "!$(evil)/warden git-credential",
+            "!/opt/bin/warden;x git-credential",
         ] {
             assert_eq!(helper_program(other), None, "{other}");
         }

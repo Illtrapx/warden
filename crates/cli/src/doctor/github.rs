@@ -2,12 +2,16 @@
 //! warden, that it takes it from this warden alone, and whether this agent has a
 //! grant.
 //!
-//! Git asks one list of helpers for `https://github.com`: the generic
+//! Git asks one list of helpers for a `https://github.com` URL: the generic
 //! `credential.helper` values and those of every `credential.<url>.helper` whose
 //! URL matches, in the order git reads its configuration, an empty value dropping
-//! all before it (gitcredentials(7)). Which URLs match is left to git itself.
+//! all before it (gitcredentials(7)). Git matches with the URL's path, and drops the
+//! path only afterwards unless `credential.useHttpPath` is set, so an entry for one
+//! repository or owner is asked too, and sent `store` with the token. Which entries
+//! apply is left to git itself; when git cannot say, the check could not run.
 
 use std::io::Write as _;
+use std::path::Path;
 use std::process::{Command, Stdio};
 
 use warden_broker_proto::doctor::Check;
@@ -20,116 +24,169 @@ use crate::setup_github::helper_program;
 /// The check's name.
 pub const NAME: &str = "github.token";
 
-/// The URL git asks about.
-const GITHUB: &str = "https://github.com";
+/// The host git asks about.
+const GITHUB_HOST: &str = "github.com";
+
+/// What the owner does when git's configuration could not be read.
+const READ_GIT: &str = "Check that `git config --list` runs and reads the configuration, then \
+                        run doctor again.";
+
+/// One credential helper entry of git's configuration.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Helper {
+    /// Its key, such as `credential.helper` or `credential.https://github.com.helper`.
+    pub key: String,
+    /// Its value: the helper, or empty to drop the helpers before it.
+    pub value: String,
+}
 
 /// How git is set up to get GitHub credentials.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct GithubSetup {
-    /// The helpers git asks for GitHub, in order, empty values included.
-    pub helpers: Vec<String>,
-    /// The helper `warden setup github` would write for this program, if it can
-    /// tell where it is.
-    pub this_helper: Option<String>,
+    /// The helpers git asks for some `https://github.com` URL, in order.
+    pub helpers: Vec<Helper>,
+    /// This program's path as `warden setup github` writes it, if it can tell.
+    pub this_program: Option<String>,
 }
 
-/// Every `credential.*helper` entry of git's configuration as `(key, value)`, in
-/// the order git reads them. `configure` sets the command up (tests point it at
-/// their own configuration).
-fn helper_entries(configure: impl Fn(&mut Command)) -> Vec<(String, String)> {
+/// Run `git` with `args`, set up by `configure`, with `stdin` as its input. `None`
+/// if it could not run.
+fn git(
+    configure: &impl Fn(&mut Command),
+    args: &[&str],
+    stdin: Option<&[u8]>,
+) -> Option<std::process::Output> {
     let mut cmd = Command::new("git");
     configure(&mut cmd);
-    let Some(out) = cmd
-        .args([
-            "config",
-            "--null",
-            "--get-regexp",
-            r"^credential\.(.*\.)?helper$",
-        ])
-        .output()
-        .ok()
-        .filter(|out| out.status.success())
-    else {
-        return Vec::new();
-    };
-    out.stdout
+    let mut child = cmd
+        .args(args)
+        .stdin(if stdin.is_some() {
+            Stdio::piped()
+        } else {
+            Stdio::null()
+        })
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .ok()?;
+    if let Some(input) = stdin {
+        child.stdin.take()?.write_all(input).ok()?;
+    }
+    child.wait_with_output().ok()
+}
+
+/// The fixed reason for git failing to read its configuration.
+fn unreadable(code: Option<i32>) -> String {
+    match code {
+        Some(code) => format!("git could not read its configuration (exit {code})"),
+        None => "git could not read its configuration (stopped by a signal)".to_owned(),
+    }
+}
+
+/// Every `credential.*helper` entry of git's configuration, in the order git reads
+/// them. Only git's "nothing matches" (exit 1) means none.
+fn helper_entries(configure: &impl Fn(&mut Command)) -> Result<Vec<Helper>, String> {
+    let args = [
+        "config",
+        "--null",
+        "--get-regexp",
+        r"^credential\.(.*\.)?helper$",
+    ];
+    let out = git(configure, &args, None).ok_or_else(|| "git could not be run".to_owned())?;
+    match out.status.code() {
+        Some(0) => {}
+        Some(1) => return Ok(Vec::new()),
+        code => return Err(unreadable(code)),
+    }
+    Ok(out
+        .stdout
         .split(|b| *b == 0)
         .filter(|entry| !entry.is_empty())
         .map(|entry| {
             let entry = String::from_utf8_lossy(entry);
-            match entry.split_once('\n') {
-                Some((key, value)) => (key.to_owned(), value.to_owned()),
-                None => (entry.into_owned(), String::new()),
+            let (key, value) = entry.split_once('\n').unwrap_or((&entry, ""));
+            Helper {
+                key: key.to_owned(),
+                value: value.to_owned(),
             }
         })
-        .collect()
+        .collect())
 }
 
-/// Whether git applies `credential.<pattern>.*` to [`GITHUB`], as git's own URL
-/// matching says. A pattern without a scheme is a partial URL, which matches any
-/// scheme, so it is asked about as an https one.
-fn pattern_matches(pattern: &str, configure: &impl Fn(&mut Command)) -> bool {
-    let url = if pattern.contains("://") {
-        pattern.to_owned()
-    } else {
-        format!("https://{pattern}")
+/// The section to give git for `pattern`, and the `https://github.com` URL that
+/// `pattern` matches if any does: the pattern's own user and path on github.com. A
+/// pattern without a scheme is a partial URL, which matches any scheme; it is
+/// written as an https one.
+fn probe(pattern: &str) -> (String, String) {
+    let (section, rest) = match pattern.split_once("://") {
+        Some((_, rest)) => (pattern.to_owned(), rest),
+        None => (format!("https://{pattern}"), pattern),
     };
-    let subsection = url.replace('\\', r"\\").replace('"', "\\\"");
-    let mut cmd = Command::new("git");
-    configure(&mut cmd);
-    let Ok(mut child) = cmd
-        .args([
-            "config",
-            "--file",
-            "-",
-            "--get-urlmatch",
-            "credential.helper",
-            GITHUB,
-        ])
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()
-    else {
-        return false;
-    };
-    let wrote = child.stdin.take().is_some_and(|mut stdin| {
-        stdin
-            .write_all(format!("[credential \"{subsection}\"]\n\thelper = x\n").as_bytes())
-            .is_ok()
-    });
-    child
-        .wait_with_output()
-        .is_ok_and(|out| wrote && out.status.success() && out.stdout == b"x\n")
+    let (authority, path) = rest.find('/').map_or((rest, ""), |at| rest.split_at(at));
+    let user = authority
+        .rsplit_once('@')
+        .map_or_else(String::new, |(user, _)| format!("{user}@"));
+    (section, format!("https://{user}{GITHUB_HOST}{path}"))
 }
 
-/// The values of `entries` that git asks for GitHub, in order: the generic ones and
-/// those whose URL `matches`.
-fn github_helpers(entries: &[(String, String)], matches: impl Fn(&str) -> bool) -> Vec<String> {
-    entries
-        .iter()
-        .filter(|(key, _)| {
-            key == "credential.helper"
-                || key
-                    .strip_prefix("credential.")
-                    .and_then(|rest| rest.strip_suffix(".helper"))
-                    .is_some_and(&matches)
-        })
-        .map(|(_, value)| value.clone())
-        .collect()
-}
-
-/// How git is set up here, as `configure` points it.
-fn setup_with(configure: impl Fn(&mut Command)) -> GithubSetup {
-    let entries = helper_entries(&configure);
-    GithubSetup {
-        helpers: github_helpers(&entries, |pattern| pattern_matches(pattern, &configure)),
-        this_helper: crate::setup_github::this_helper(),
+/// Whether git applies `credential.<pattern>.*` to some `https://github.com` URL,
+/// as git's own URL matching says.
+fn pattern_matches(pattern: &str, configure: &impl Fn(&mut Command)) -> Result<bool, String> {
+    let (section, url) = probe(pattern);
+    let section = section.replace('\\', r"\\").replace('"', "\\\"");
+    let config = format!("[credential \"{section}\"]\n\thelper = x\n");
+    let args = [
+        "config",
+        "--file",
+        "-",
+        "--get-urlmatch",
+        "credential.helper",
+        &url,
+    ];
+    let out = git(configure, &args, Some(config.as_bytes()))
+        .ok_or_else(|| "git could not be run".to_owned())?;
+    match out.status.code() {
+        Some(0) => Ok(out.stdout == b"x\n"),
+        Some(1) => Ok(false),
+        code => Err(unreadable(code)),
     }
 }
 
-/// How git is set up here.
-pub fn live_setup() -> GithubSetup {
+/// The entries git asks for some GitHub URL, in order: the generic ones and those
+/// whose URL `matches`.
+fn github_helpers(
+    entries: Vec<Helper>,
+    matches: impl Fn(&str) -> Result<bool, String>,
+) -> Result<Vec<Helper>, String> {
+    let mut helpers = Vec::new();
+    for helper in entries {
+        let pattern = helper
+            .key
+            .strip_prefix("credential.")
+            .and_then(|rest| rest.strip_suffix(".helper"));
+        let applies = match pattern {
+            _ if helper.key == "credential.helper" => true,
+            Some(pattern) => matches(pattern)?,
+            None => false,
+        };
+        if applies {
+            helpers.push(helper);
+        }
+    }
+    Ok(helpers)
+}
+
+/// How git is set up here, as `configure` points it.
+fn setup_with(configure: impl Fn(&mut Command)) -> Result<GithubSetup, String> {
+    let entries = helper_entries(&configure)?;
+    Ok(GithubSetup {
+        helpers: github_helpers(entries, |pattern| pattern_matches(pattern, &configure))?,
+        this_program: crate::setup_github::this_program(),
+    })
+}
+
+/// How git is set up here, or why that could not be told.
+pub fn live_setup() -> Result<GithubSetup, String> {
     setup_with(|_| {})
 }
 
@@ -140,29 +197,100 @@ pub fn has_grant(grants: &[GrantView]) -> bool {
         .any(|grant| matches!(grant.access, GrantAccess::GithubToken(_)))
 }
 
-/// Whether `helper` runs a warden: this one's exact value, or the shape `warden
-/// setup github` writes naming a program called `warden`.
-fn is_warden(helper: &str, this_helper: Option<&str>) -> bool {
-    Some(helper) == this_helper
-        || helper_program(helper).is_some_and(|program| {
-            std::path::Path::new(&program)
+/// What a helper value is to this check.
+#[derive(Debug, PartialEq, Eq)]
+enum Kind {
+    /// This program.
+    This,
+    /// Another program called `warden`.
+    OtherWarden,
+    /// A value naming warden in a form this check cannot read.
+    Unreadable,
+    /// Anything else, an empty value included.
+    Other,
+}
+
+fn kind(value: &str, this_program: Option<&str>) -> Kind {
+    match helper_program(value) {
+        Some(program) if Some(program.as_str()) == this_program => Kind::This,
+        Some(program)
+            if Path::new(&program)
                 .file_name()
-                .is_some_and(|name| name == "warden")
-        })
+                .is_some_and(|n| n == "warden") =>
+        {
+            Kind::OtherWarden
+        }
+        None if value.contains("warden") => Kind::Unreadable,
+        Some(_) | None => Kind::Other,
+    }
 }
 
 /// Whether git takes its GitHub credential from a warden, among others or not.
 pub fn through_warden(setup: &GithubSetup) -> bool {
-    setup
-        .helpers
-        .iter()
-        .any(|helper| is_warden(helper, setup.this_helper.as_deref()))
+    setup.helpers.iter().any(|helper| {
+        matches!(
+            kind(&helper.value, setup.this_program.as_deref()),
+            Kind::This | Kind::OtherWarden
+        )
+    })
 }
 
-/// The check: `setup` is how git asks for GitHub credentials; `grant` is whether
-/// this agent has an active grant, `None` when the broker was not asked.
-pub fn check(setup: &GithubSetup, grant: Option<Result<bool, CallError>>) -> Check {
+/// The failure for `used`, the helpers that count, when they are not this warden
+/// alone.
+fn not_alone(used: &[Helper], this: Option<&str>) -> Check {
     const SETUP: &str = "Run `warden setup github`.";
+    if let [only] = used
+        && kind(&only.value, this) == Kind::OtherWarden
+    {
+        return Check::fail(
+            NAME,
+            format!("{} runs another warden than this one.", only.key),
+            SETUP,
+        );
+    }
+    let others: Vec<&str> = used
+        .iter()
+        .filter(|helper| kind(&helper.value, this) != Kind::This)
+        .map(|helper| helper.key.as_str())
+        .collect();
+    let detail = if others.is_empty() {
+        "Git asks no credential helper for some https://github.com URLs: an empty value comes \
+         after warden's."
+            .to_owned()
+    } else {
+        format!(
+            "Git asks other credential helpers for https://github.com URLs as well as warden's, \
+             and hands them the token to store: {}.",
+            others.join(", ")
+        )
+    };
+    Check::fail(NAME, detail, SETUP)
+}
+
+/// The check: `setup` is how git asks for GitHub credentials, or why that could not
+/// be told; `grant` is whether this agent has an active grant, `None` when the
+/// broker was not asked.
+pub fn check(setup: &Result<GithubSetup, String>, grant: Option<Result<bool, CallError>>) -> Check {
+    let setup = match setup {
+        Ok(setup) => setup,
+        Err(reason) => return Check::could_not_check(NAME, reason.clone(), READ_GIT),
+    };
+    let this = setup.this_program.as_deref();
+    if let Some(odd) = setup
+        .helpers
+        .iter()
+        .find(|helper| kind(&helper.value, this) == Kind::Unreadable)
+    {
+        return Check::could_not_check(
+            NAME,
+            format!(
+                "{} names warden in a form this check cannot read, so it cannot tell which \
+                 helpers git asks.",
+                odd.key
+            ),
+            "Run `warden setup github`.",
+        );
+    }
     if !through_warden(setup) {
         return Check::pass(
             NAME,
@@ -174,22 +302,10 @@ pub fn check(setup: &GithubSetup, grant: Option<Result<bool, CallError>>) -> Che
     let helpers = &setup.helpers;
     let used = helpers
         .iter()
-        .rposition(String::is_empty)
+        .rposition(|helper| helper.value.is_empty())
         .map_or(&helpers[..], |last| &helpers[last + 1..]);
-    let [only] = used else {
-        return Check::fail(
-            NAME,
-            "Git asks other credential helpers for https://github.com as well as warden's, or \
-             none.",
-            SETUP,
-        );
-    };
-    if setup.this_helper.as_ref() != Some(only) {
-        return Check::fail(
-            NAME,
-            "Git's credential helper for https://github.com is not this warden.",
-            SETUP,
-        );
+    if !matches!(used, [only] if kind(&only.value, this) == Kind::This) {
+        return not_alone(used, this);
     }
     match grant {
         None => Check::could_not_check(
