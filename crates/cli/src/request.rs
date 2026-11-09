@@ -18,8 +18,8 @@ use crate::config::Config;
 use crate::install::install_grant;
 use crate::request_context::{self, Answered, RequestContext, compare};
 use crate::{
-    EXIT_CANCELLED, EXIT_DENIED, EXIT_ERROR, EXIT_EXPIRED, EXIT_INTERRUPTED, EXIT_REVOKED,
-    EXIT_USAGE, Exit, client, guidance, http, local_time, unix_now,
+    EXIT_CANCELLED, EXIT_DENIED, EXIT_ERROR, EXIT_EXPIRED, EXIT_INTERRUPTED, EXIT_NO_GRANT,
+    EXIT_REVOKED, EXIT_USAGE, Exit, client, guidance, http, local_time, unix_now,
 };
 
 /// How long Ctrl-C waits for the broker to confirm the cancellation of the
@@ -94,7 +94,14 @@ pub(crate) async fn request_ssh(
         session,
         link,
     };
-    let grant = request_grant(&config, &client, &req, &format!("for {target}")).await?;
+    let grant = request_grant(
+        &config,
+        &client,
+        &req,
+        &format!("for {target}"),
+        Pending::Same,
+    )
+    .await?;
     install_grant(&target, &user, &key, &grant).await?;
     announce(&grant);
     Ok(())
@@ -126,7 +133,14 @@ pub(crate) async fn request_api(
         session,
         link,
     };
-    let grant = request_grant(&config, &client, &req, &format!("for api secret {secret}")).await?;
+    let grant = request_grant(
+        &config,
+        &client,
+        &req,
+        &format!("for api secret {secret}"),
+        Pending::Same,
+    )
+    .await?;
     let GrantAccess::Api(api) = &grant.access else {
         bail!("the broker returned a non-api grant for an api request");
     };
@@ -168,7 +182,7 @@ pub(crate) async fn request_signing(
         session,
         link,
     };
-    let grant = request_grant(&config, &client, &req, "for commit signing").await?;
+    let grant = request_grant(&config, &client, &req, "for commit signing", Pending::Same).await?;
     let GrantAccess::CommitSigning(signing) = &grant.access else {
         bail!("the broker returned another kind of grant for a commit signing request");
     };
@@ -179,6 +193,101 @@ pub(crate) async fn request_signing(
         signing.key_fingerprint
     );
     Ok(())
+}
+
+pub(crate) async fn request_github(
+    window: Window,
+    goal: Goal,
+    context: RequestContext,
+) -> Result<()> {
+    let (session, link) = resolve_context(context)?;
+    let (config, client) = client()?;
+    let req = github_request(goal, window, session, link);
+    let grant = request_grant(&config, &client, &req, GITHUB_SUBJECT, Pending::Same).await?;
+    check_github_grant(&grant)?;
+    announce(&grant);
+    println!(
+        "git and gh get GitHub tokens under it until then. Set them up with `warden setup \
+         github` if they are not yet set up."
+    );
+    Ok(())
+}
+
+/// Ask the owner for a GitHub token grant on behalf of git or `gh`, which found
+/// none, and wait for the decision as `warden request` does: a 30-day window, the
+/// session label from the environment. Writes only to stderr, as git and the `gh`
+/// wrapper read stdout. A pending GitHub token request of this agent made some
+/// other way is waited on instead: the broker keeps one per agent, and any of them
+/// grants the same.
+///
+/// # Errors
+/// [`Exit`] with [`EXIT_NO_GRANT`] when the request ends without a grant (denied,
+/// expired, cancelled, revoked, or no decision in time), saying not to work around
+/// it; a broker that cannot be reached or refuses the request as it is.
+pub(crate) async fn request_github_for_tool(
+    config: &Config,
+    client: &Client,
+    goal: Goal,
+) -> Result<()> {
+    let (session, link) = resolve_context(RequestContext::default())?;
+    let req = github_request(goal, Window::GITHUB_TOKEN_DEFAULT, session, link);
+    eprintln!("warden: this agent has no active GitHub token grant; asking the owner for one");
+    let grant = request_grant(config, client, &req, GITHUB_SUBJECT, Pending::AnyOfKind)
+        .await
+        .map_err(not_granted)?;
+    check_github_grant(&grant)?;
+    eprintln!(
+        "warden: approved: grant {} until {}",
+        grant.grant_id,
+        local_time(grant.not_after)
+    );
+    Ok(())
+}
+
+/// What completes "a request …" for a GitHub token request.
+const GITHUB_SUBJECT: &str = "for a github token";
+
+fn github_request(
+    goal: Goal,
+    window: Window,
+    session: Option<SessionLabel>,
+    link: Option<SessionLink>,
+) -> CreateRequest {
+    CreateRequest {
+        goal,
+        access: Access::GithubToken {},
+        window,
+        session,
+        link,
+    }
+}
+
+fn check_github_grant(grant: &GrantView) -> Result<()> {
+    ensure!(
+        matches!(grant.access, GrantAccess::GithubToken(_)),
+        "the broker returned another kind of grant for a github token request"
+    );
+    Ok(())
+}
+
+/// The error for an automatic request that ended without a grant. A broker that
+/// could not be reached or refused the request, an interruption and a usage error
+/// keep their own; the rest means the owner did not grant it.
+fn not_granted(e: anyhow::Error) -> anyhow::Error {
+    let keep = e.downcast_ref::<CallError>().is_some()
+        || e.downcast_ref::<Exit>()
+            .is_some_and(|exit| matches!(exit.code, EXIT_INTERRUPTED | EXIT_USAGE));
+    if keep {
+        return e;
+    }
+    Exit::new(
+        EXIT_NO_GRANT,
+        format!(
+            "no GitHub token for git and gh: {e:#}. Do not retry this in a loop or look for \
+             another way to reach GitHub: ask the owner for the access"
+        ),
+    )
+    .into()
 }
 
 /// Whether `api` is inside what was asked for. A broker older than 0.4
@@ -240,8 +349,21 @@ pub(crate) fn announce(grant: &GrantView) {
     );
 }
 
+/// Which pending request, already in the broker's slot for this request, may be
+/// waited on in its place.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Pending {
+    /// Only one with this request's fingerprint: approving another might not grant
+    /// what was asked.
+    Same,
+    /// Any: for an access with no parameters, which every request in its slot asks
+    /// for alike.
+    AnyOfKind,
+}
+
 /// Create `req`, wait for the owner's decision and return the approved
-/// grant. `subject` completes "a request …" in messages. Denied, expired,
+/// grant. `subject` completes "a request …" in messages. `pending` says whether a
+/// request already pending in its place, with another fingerprint, is waited on. Denied, expired,
 /// revoked, cancelled and failed requests end the process with their own exit
 /// codes. Ctrl-C while waiting cancels the request (best effort, for at most
 /// [`CANCEL_TIMEOUT`]) and exits 130; a second Ctrl-C during that, or a
@@ -252,6 +374,7 @@ async fn request_grant(
     client: &Client,
     req: &CreateRequest,
     subject: &str,
+    pending: Pending,
 ) -> Result<GrantView> {
     // Registered before anything is sent, so Ctrl-C is never lost.
     let mut interrupt = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::interrupt())
@@ -286,7 +409,13 @@ async fn request_grant(
         // owner sees the request as its fingerprint says, so waiting on it is safe.
         Answered::WithoutContext => eprintln!("warden: {}", guidance::CONTEXT_NOT_SHOWN),
         // Approving it might not grant what was asked here.
-        Answered::Other => bail!(guidance::already_pending(subject, &created)),
+        Answered::Other if pending == Pending::Same => {
+            bail!(guidance::already_pending(subject, &created));
+        }
+        Answered::Other => eprintln!(
+            "warden: a request {subject} is already pending (id {}); waiting on it instead",
+            created.id
+        ),
     }
     eprintln!(
         "request {}, fingerprint {} ({}) — waiting for approval…",

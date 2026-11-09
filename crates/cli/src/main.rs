@@ -6,7 +6,9 @@ mod client;
 mod commands;
 mod config;
 mod doctor;
+mod git_credential;
 mod git_signing;
+mod github_token;
 mod guidance;
 mod http;
 mod install;
@@ -15,6 +17,7 @@ mod recover;
 mod request;
 mod request_context;
 mod setup_git;
+mod setup_github;
 mod sign;
 mod ssh;
 mod ssh_agent;
@@ -27,12 +30,12 @@ use anyhow::{Result, ensure};
 use clap::Parser;
 use warden_broker_proto::doctor::EXIT_NOTHING_FAILED;
 
-use crate::cli::{Cli, Cmd, RequestKind, SetupWhat};
+use crate::cli::{Cli, Cmd, GithubCmd, RequestKind, SetupWhat};
 use crate::client::Client;
 use crate::commands::{HttpCall, revoke, run_http, run_setup_git, run_ssh, status};
 use crate::config::Config;
 use crate::login::{KeyLogin, login, login_with_key};
-use crate::request::{cancel, request_api, request_signing, request_ssh};
+use crate::request::{cancel, request_api, request_github, request_signing, request_ssh};
 
 /// Exit code: any other failure.
 const EXIT_ERROR: u8 = 1;
@@ -43,7 +46,8 @@ const EXIT_EXPIRED: u8 = 3;
 /// Exit code: the grant was revoked.
 const EXIT_REVOKED: u8 = 4;
 /// Exit code: `warden ssh` or `warden ssh-config` found no active grant for the
-/// target (for `ssh-config --min-remaining`, none that lasts long enough).
+/// target (for `ssh-config --min-remaining`, none that lasts long enough); or no
+/// GitHub token grant could be had for git or gh.
 const EXIT_NO_GRANT: u8 = 5;
 /// Exit code: a request was cancelled (by the agent, from another terminal)
 /// while this command waited for it.
@@ -90,6 +94,10 @@ async fn main() -> ExitCode {
     let args: Vec<std::ffi::OsString> = std::env::args_os().skip(1).collect();
     if git_signing::is_program_call(&args) {
         return git_signing::run(&args).await;
+    }
+    // Called by git as its credential helper for GitHub.
+    if git_credential::is_program_call(&args) {
+        return git_credential::run(&args).await;
     }
     let cli = match Cli::try_parse() {
         Ok(cli) => cli,
@@ -165,44 +173,16 @@ async fn run(cmd: Cmd) -> Result<()> {
             };
             login_with_key(login).await
         }
-        Cmd::Request {
-            kind:
-                RequestKind::Ssh {
-                    target,
-                    user,
-                    window,
-                    goal,
-                    context,
-                },
-        } => request_ssh(target, user, window, goal, context).await,
-        Cmd::Request {
-            kind:
-                RequestKind::Api {
-                    secret,
-                    methods,
-                    path,
-                    window,
-                    goal,
-                    context,
-                },
-        } => request_api(secret, methods, path, window, goal, context).await,
-        Cmd::Request {
-            kind:
-                RequestKind::Signing {
-                    window,
-                    goal,
-                    context,
-                },
-        } => request_signing(window, goal, context).await,
+        Cmd::Request { kind } => run_request(kind).await,
         Cmd::Setup {
             what: SetupWhat::Git { local },
         } => run_setup_git(local).await,
-        Cmd::Request {
-            kind: RequestKind::Cancel { id },
-        } => cancel(&id).await,
-        Cmd::Request {
-            kind: RequestKind::Collect { grant },
-        } => recover::collect(&grant).await,
+        Cmd::Setup {
+            what: SetupWhat::Github,
+        } => setup_github::run(),
+        Cmd::Github {
+            what: GithubCmd::Token,
+        } => github_token::print_token().await,
         Cmd::Http {
             secret,
             method,
@@ -237,6 +217,38 @@ async fn run(cmd: Cmd) -> Result<()> {
         }
         Cmd::Status => status().await,
         Cmd::Revoke { grant } => revoke(&grant).await,
+    }
+}
+
+async fn run_request(kind: RequestKind) -> Result<()> {
+    match kind {
+        RequestKind::Ssh {
+            target,
+            user,
+            window,
+            goal,
+            context,
+        } => request_ssh(target, user, window, goal, context).await,
+        RequestKind::Api {
+            secret,
+            methods,
+            path,
+            window,
+            goal,
+            context,
+        } => request_api(secret, methods, path, window, goal, context).await,
+        RequestKind::Signing {
+            window,
+            goal,
+            context,
+        } => request_signing(window, goal, context).await,
+        RequestKind::Github {
+            window,
+            goal,
+            context,
+        } => request_github(window, goal, context).await,
+        RequestKind::Cancel { id } => cancel(&id).await,
+        RequestKind::Collect { grant } => recover::collect(&grant).await,
     }
 }
 
