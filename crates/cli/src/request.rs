@@ -8,9 +8,9 @@ use ssh_key::rand_core::OsRng;
 use ssh_key::{Algorithm, PrivateKey};
 use warden_broker_proto::doctor::sanitize;
 use warden_broker_proto::{
-    Access, ApiGrant, CreateRequest, Goal, GrantAccess, GrantView, Id, RequestStatus, SecretName,
-    SessionLabel, SessionLink, TargetName, UnixUser, Window, is_read_only, modifying_methods,
-    under_prefix,
+    Access, ApiGrant, CreateRequest, CreatedResponse, Goal, GrantAccess, GrantView, Id,
+    RequestStatus, SecretName, SessionLabel, SessionLink, TargetName, UnixUser, Window,
+    is_read_only, modifying_methods, under_prefix,
 };
 
 use crate::client::{CallError, Client, MAX_WAIT_SECS};
@@ -362,13 +362,16 @@ enum Pending {
 }
 
 /// Create `req`, wait for the owner's decision and return the approved
-/// grant. `subject` completes "a request …" in messages. `pending` says whether a
-/// request already pending in its place, with another fingerprint, is waited on. Denied, expired,
+/// grant. `subject` completes "a request …" in messages. Denied, expired,
 /// revoked, cancelled and failed requests end the process with their own exit
 /// codes. Ctrl-C while waiting cancels the request (best effort, for at most
 /// [`CANCEL_TIMEOUT`]) and exits 130; a second Ctrl-C during that, or a
 /// Ctrl-C once the grant is returned (while the caller installs it), exits
 /// 130 at once.
+///
+/// `pending` says whether a request already pending in this one's place, with
+/// another fingerprint, is waited on instead. Ctrl-C never withdraws such a
+/// request: this command did not make it.
 async fn request_grant(
     config: &Config,
     client: &Client,
@@ -403,20 +406,7 @@ async fn request_grant(
         };
         return Err(exit.into());
     };
-    match compare(&created.fingerprint, &config.agent, req) {
-        Answered::Same => {}
-        // The access is the same and only what this CLI added is missing. The
-        // owner sees the request as its fingerprint says, so waiting on it is safe.
-        Answered::WithoutContext => eprintln!("warden: {}", guidance::CONTEXT_NOT_SHOWN),
-        // Approving it might not grant what was asked here.
-        Answered::Other if pending == Pending::Same => {
-            bail!(guidance::already_pending(subject, &created));
-        }
-        Answered::Other => eprintln!(
-            "warden: a request {subject} is already pending (id {}); waiting on it instead",
-            created.id
-        ),
-    }
+    let ours = answered_is_ours(config, req, subject, pending, &created)?;
     eprintln!(
         "request {}, fingerprint {} ({}) — waiting for approval…",
         created.id,
@@ -432,6 +422,16 @@ async fn request_grant(
         _ = interrupt.recv() => None,
     };
     let Some(waited) = waited else {
+        if !ours {
+            return Err(Exit::new(
+                EXIT_INTERRUPTED,
+                format!(
+                    "interrupted; request {} was made elsewhere and is left pending",
+                    created.id
+                ),
+            )
+            .into());
+        }
         exit_on_interrupt(
             interrupt,
             format!(
@@ -475,6 +475,42 @@ async fn request_grant(
             Err(Exit::new(code, guidance::request_ended(&other)).into())
         }
     }
+}
+
+/// Whether `created`, the broker's answer to `req`, may be waited on, and if so
+/// whether it is this request, which only then is this command's to withdraw on
+/// Ctrl-C.
+///
+/// # Errors
+/// With `pending` [`Pending::Same`], a request of another fingerprint.
+fn answered_is_ours(
+    config: &Config,
+    req: &CreateRequest,
+    subject: &str,
+    pending: Pending,
+    created: &CreatedResponse,
+) -> Result<bool> {
+    Ok(match compare(&created.fingerprint, &config.agent, req) {
+        Answered::Same => true,
+        // The access is the same and only what this CLI added is missing. The
+        // owner sees the request as its fingerprint says, so waiting on it is safe.
+        Answered::WithoutContext => {
+            eprintln!("warden: {}", guidance::CONTEXT_NOT_SHOWN);
+            true
+        }
+        // Approving it might not grant what was asked here.
+        Answered::Other if pending == Pending::Same => {
+            bail!(guidance::already_pending(subject, created));
+        }
+        Answered::Other => {
+            eprintln!(
+                "warden: a request {subject} made elsewhere is already pending (id {}); waiting \
+                 on it instead. It is not this command's, so Ctrl-C leaves it pending",
+                created.id
+            );
+            false
+        }
+    })
 }
 
 /// From now on, end the process at once on Ctrl-C: print `message` and exit

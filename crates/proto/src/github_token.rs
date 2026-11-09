@@ -10,6 +10,10 @@ use serde::{Deserialize, Serialize};
 /// had one, or it ended or was revoked. The CLI recognises it to say how to ask.
 pub const NO_ACTIVE_GRANT: &str = "no active GitHub token grant for this agent";
 
+/// What the broker says when the App or installation is no longer the one the
+/// owner approved. The CLI recognises it to say a new grant is needed.
+pub const APP_CHANGED: &str = "the GitHub App changed; request a new grant";
+
 /// What the broker says when it holds no GitHub App.
 pub const NOT_CONFIGURED: &str = "GitHub tokens are not configured on this broker";
 

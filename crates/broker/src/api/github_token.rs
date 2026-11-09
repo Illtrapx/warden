@@ -10,7 +10,9 @@ use axum::Json;
 use axum::extract::State;
 use axum::http::StatusCode;
 use secrecy::ExposeSecret as _;
-use warden_broker_proto::github_token::{GithubTokenResponse, NO_ACTIVE_GRANT, PERMISSIONS};
+use warden_broker_proto::github_token::{
+    APP_CHANGED, GithubTokenResponse, NO_ACTIVE_GRANT, PERMISSIONS,
+};
 use warden_broker_proto::{AgentName, Id};
 
 use super::{ApiJson, Failure};
@@ -19,9 +21,6 @@ use crate::audit::AuditEvent;
 use crate::github_app;
 use crate::identity::AuthedAgent;
 use crate::requests::{ActiveGithubToken, RequestError};
-
-/// What the agent is told when the App is no longer the one the owner approved.
-const APP_CHANGED: &str = "the GitHub App changed; request a new grant";
 
 /// What the agent is told when GitHub gave no token. Fixed: nothing GitHub said, and
 /// nothing about why, is passed on.

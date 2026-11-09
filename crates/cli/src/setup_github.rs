@@ -38,6 +38,43 @@ fn helper_value(exe: &str) -> String {
     format!("!{} git-credential", shell_quote(exe))
 }
 
+/// The program of a helper value in the shape [`helper_value`] writes, or `None`
+/// for any other value.
+pub fn helper_program(value: &str) -> Option<String> {
+    let quoted = value.strip_prefix('!')?.strip_suffix(" git-credential")?;
+    let mut program = String::new();
+    let mut rest = quoted;
+    loop {
+        // A quoted part, then either the end or an escaped quote and another part.
+        let inner = rest.strip_prefix('\'')?;
+        let end = inner.find('\'')?;
+        program.push_str(&inner[..end]);
+        rest = &inner[end + 1..];
+        if rest.is_empty() {
+            return Some(program);
+        }
+        rest = rest.strip_prefix("\\'")?;
+        program.push('\'');
+        if rest.is_empty() {
+            return Some(program);
+        }
+    }
+}
+
+/// This program, as the helper and the wrapper name it.
+fn this_exe() -> Result<String> {
+    let exe = std::env::current_exe()
+        .and_then(fs::canonicalize)
+        .context("cannot tell where this program is")?;
+    printable(&exe, "this program")
+}
+
+/// The helper value `warden setup github` writes for this program, if it can tell
+/// where it is.
+pub fn this_helper() -> Option<String> {
+    this_exe().ok().map(|exe| helper_value(&exe))
+}
+
 /// The `gh` wrapper running `real_gh` with a token from `exe`.
 fn wrapper_script(exe: &str, real_gh: &str) -> String {
     format!(
@@ -184,14 +221,30 @@ fn write_wrapper(path: &Path, script: &str) -> Result<()> {
             fs::set_permissions(&temp, fs::Permissions::from_mode(0o755))
                 .with_context(|| format!("cannot make {} executable", temp.display()))
         })
-        .and_then(|()| {
-            fs::rename(&temp, path).with_context(|| format!("cannot write {}", path.display()))
-        });
+        .and_then(|()| replace_if_ours(&temp, path));
     if written.is_err() {
         // Best effort: the error that matters is the one returned.
         let _ = fs::remove_file(&temp);
     }
     written
+}
+
+/// Rename `temp` to `path`, looking at `path` again first: a file that appeared
+/// since the first look and is not ours is never replaced. Where nothing is, the
+/// rename refuses to replace anything that appears in the meantime.
+fn replace_if_ours(temp: &Path, path: &Path) -> Result<()> {
+    use rustix::fs::{CWD, RenameFlags, renameat_with};
+    let flags = match existing(path)? {
+        Existing::Nothing => RenameFlags::NOREPLACE,
+        Existing::Ours => RenameFlags::empty(),
+        Existing::Foreign => bail!(
+            "{} appeared meanwhile and was not written by warden, so it was left as it is",
+            path.display()
+        ),
+    };
+    renameat_with(CWD, temp, CWD, path, flags)
+        .map_err(std::io::Error::from)
+        .with_context(|| format!("cannot write {}", path.display()))
 }
 
 /// A path for a shell script or git's configuration: UTF-8, no control characters.
@@ -213,10 +266,7 @@ fn printable(path: &Path, what: &str) -> Result<String> {
 /// cannot be located, nothing is changed. If git refuses a value or the wrapper
 /// cannot be written, the message says so; what was changed before stays changed.
 pub fn run() -> Result<()> {
-    let exe = std::env::current_exe()
-        .and_then(fs::canonicalize)
-        .context("cannot tell where this program is")?;
-    let exe = printable(&exe, "this program")?;
+    let exe = this_exe()?;
     let home = dirs::home_dir().context("cannot determine the home directory")?;
     let bin = home.join(".local/bin");
     let wrapper = bin.join("gh");
@@ -268,8 +318,8 @@ mod tests {
     use std::os::unix::fs::PermissionsExt as _;
 
     use super::{
-        Existing, MARKER, existing, find_real_gh, helper_value, is_ours, position, shell_quote,
-        wrapper_script,
+        Existing, MARKER, existing, find_real_gh, helper_program, helper_value, is_ours, position,
+        shell_quote, wrapper_script, write_wrapper,
     };
 
     #[test]
@@ -280,6 +330,28 @@ mod tests {
             helper_value("/opt/my bin/warden"),
             "!'/opt/my bin/warden' git-credential"
         );
+    }
+
+    #[test]
+    fn a_helper_value_gives_back_its_program() {
+        for exe in ["/opt/bin/warden", "/a b/it's", "/x'", "'", "/a''b"] {
+            assert_eq!(
+                helper_program(&helper_value(exe)).as_deref(),
+                Some(exe),
+                "{exe}"
+            );
+        }
+        for other in [
+            "osxkeychain",
+            "",
+            "!/opt/bin/warden git-credential",
+            "!'/opt/bin/warden' git-credential --x",
+            "'/opt/bin/warden' git-credential",
+            "!'/opt/bin/warden'x git-credential",
+            "!'/opt/bin/warden git-credential",
+        ] {
+            assert_eq!(helper_program(other), None, "{other}");
+        }
     }
 
     #[test]
@@ -335,6 +407,21 @@ mod tests {
         assert_eq!(position(&path, &root.path().join("absent")), None);
         let none = std::env::join_paths([mine.to_str().unwrap()]).unwrap();
         assert_eq!(find_real_gh(&none, &wrapper), None);
+    }
+
+    #[test]
+    fn the_wrapper_never_replaces_a_file_that_is_not_ours() {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("gh");
+        write_wrapper(&path, &wrapper_script("/w", "/g")).unwrap();
+        assert_eq!(existing(&path).unwrap(), Existing::Ours);
+        write_wrapper(&path, &wrapper_script("/w2", "/g")).unwrap();
+        assert!(fs::read_to_string(&path).unwrap().contains("'/w2'"));
+        fs::write(&path, "#!/bin/sh\necho mine\n").unwrap();
+        assert!(write_wrapper(&path, &wrapper_script("/w", "/g")).is_err());
+        assert_eq!(fs::read_to_string(&path).unwrap(), "#!/bin/sh\necho mine\n");
+        let names: Vec<_> = fs::read_dir(root.path()).unwrap().flatten().collect();
+        assert_eq!(names.len(), 1, "no temporary file left: {names:?}");
     }
 
     #[test]

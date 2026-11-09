@@ -47,8 +47,8 @@ pub trait Probes {
     fn git_signing(&self) -> GitSigning;
     /// What the broker says about signing for this agent.
     async fn signing_state(&self, config: &Config) -> Result<SigningState, CallError>;
-    /// Git's credential helpers for `https://github.com`, in order.
-    fn github_helpers(&self) -> Vec<String>;
+    /// How git gets credentials for `https://github.com`.
+    fn github_setup(&self) -> github::GithubSetup;
     /// Whether this agent has an active GitHub token grant.
     async fn github_grant(&self, config: &Config) -> Result<bool, CallError>;
 }
@@ -141,8 +141,8 @@ impl Probes for Live {
         })
     }
 
-    fn github_helpers(&self) -> Vec<String> {
-        github::live_helpers()
+    fn github_setup(&self) -> github::GithubSetup {
+        github::live_setup()
     }
 
     async fn github_grant(&self, config: &Config) -> Result<bool, CallError> {
@@ -257,13 +257,13 @@ async fn checks(probes: &impl Probes) -> Vec<Check> {
         None
     };
     checks.push(git_signing_check(&git, state));
-    let helpers = probes.github_helpers();
-    let grant = if github::through_warden(&helpers) && credential.is_ok() {
+    let github = probes.github_setup();
+    let grant = if github::through_warden(&github) && credential.is_ok() {
         Some(probes.github_grant(&config).await)
     } else {
         None
     };
-    checks.push(github::check(&helpers, grant));
+    checks.push(github::check(&github, grant));
     checks.push(version_check());
     checks
 }
@@ -556,8 +556,8 @@ mod tests {
             ready(self.accepted.clone())
         }
 
-        fn github_helpers(&self) -> Vec<String> {
-            Vec::new()
+        fn github_setup(&self) -> super::github::GithubSetup {
+            super::github::GithubSetup::default()
         }
 
         fn github_grant(&self, _config: &Config) -> impl Future<Output = Result<bool, CallError>> {

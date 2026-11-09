@@ -19,11 +19,14 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context as _, Result, anyhow};
 use serde::{Deserialize, Serialize};
-use warden_broker_proto::github_token::{GithubTokenResponse, NO_ACTIVE_GRANT, NOT_CONFIGURED};
+use warden_broker_proto::github_token::{
+    APP_CHANGED, GithubTokenResponse, NO_ACTIVE_GRANT, NOT_CONFIGURED,
+};
 use warden_broker_proto::{Goal, Id};
 use zeroize::Zeroizing;
 
 use crate::client::{CallError, Client};
+use crate::config::Config;
 use crate::{EXIT_ERROR, EXIT_NO_GRANT, Exit, agent, request, unix_now};
 
 /// A cached token is served only while it has at least this long left, in seconds.
@@ -37,9 +40,6 @@ const MAX_CACHE_BYTES: usize = 16 * 1024;
 
 /// The longest token accepted, in bytes.
 const MAX_TOKEN_BYTES: usize = 1024;
-
-/// What the broker says when the App changed since the grant was approved.
-const APP_CHANGED: &str = "the GitHub App changed";
 
 /// Which program wants the token, for the goal of a request made on its behalf.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -80,15 +80,38 @@ fn goal_for(caller: Caller, dir: Option<&Path>) -> Result<Goal> {
     }
 }
 
+/// Whom a token was minted for: the agent and its broker, as configured. A cache
+/// minted for another is never served, so that a new `warden login` does not keep
+/// using the previous identity's token.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Identity {
+    /// The agent's name.
+    pub agent: String,
+    /// The broker's agent API URL.
+    pub server: String,
+}
+
+impl Identity {
+    /// The identity `config` logs in as.
+    pub fn of(config: &Config) -> Self {
+        Self {
+            agent: config.agent.to_string(),
+            server: config.server.to_string(),
+        }
+    }
+}
+
 /// A token in memory that is wiped when dropped.
 struct Held {
     token: Zeroizing<String>,
     expires_at: i64,
     grant_id: Id,
+    identity: Identity,
 }
 
-impl From<GithubTokenResponse> for Held {
-    fn from(response: GithubTokenResponse) -> Self {
+impl Held {
+    fn new(response: GithubTokenResponse, identity: Identity) -> Self {
         let GithubTokenResponse {
             token,
             expires_at,
@@ -98,6 +121,7 @@ impl From<GithubTokenResponse> for Held {
             token: Zeroizing::new(token),
             expires_at,
             grant_id,
+            identity,
         }
     }
 }
@@ -109,6 +133,8 @@ struct Stored {
     token: String,
     expires_at: i64,
     grant_id: Id,
+    agent: String,
+    server: String,
 }
 
 /// The cache file as written.
@@ -117,6 +143,8 @@ struct StoredRef<'a> {
     token: &'a str,
     expires_at: i64,
     grant_id: &'a Id,
+    agent: &'a str,
+    server: &'a str,
 }
 
 /// Whether `token` can go on a line of git's credential protocol and into an
@@ -158,19 +186,24 @@ fn read_stored(path: &Path) -> Option<Held> {
         token,
         expires_at,
         grant_id,
+        agent,
+        server,
     } = serde_json::from_slice(&raw).ok()?;
     let token = Zeroizing::new(token);
     well_formed(&token).then_some(Held {
         token,
         expires_at,
         grant_id,
+        identity: Identity { agent, server },
     })
 }
 
-/// The cached token at `path` if it has at least [`MIN_REMAINING_SECS`] left at
-/// `now`.
-fn read_cache(path: &Path, now: i64) -> Option<Held> {
-    read_stored(path).filter(|t| t.expires_at.saturating_sub(now) >= MIN_REMAINING_SECS)
+/// The cached token at `path` if it was minted for `identity` and has at least
+/// [`MIN_REMAINING_SECS`] left at `now`.
+fn read_cache(path: &Path, now: i64, identity: &Identity) -> Option<Held> {
+    read_stored(path).filter(|t| {
+        t.identity == *identity && t.expires_at.saturating_sub(now) >= MIN_REMAINING_SECS
+    })
 }
 
 /// Replace the cache at `path` with `token`: written to a new 0600 file beside it,
@@ -181,6 +214,8 @@ fn write_cache(path: &Path, token: &Held) -> Result<()> {
         token: &token.token,
         expires_at: token.expires_at,
         grant_id: &token.grant_id,
+        agent: &token.identity.agent,
+        server: &token.identity.server,
     };
     // Sized up front, so that writing never grows the buffer and leaves a copy.
     let mut contents = Zeroizing::new(Vec::with_capacity(token.token.len() + 256));
@@ -203,21 +238,27 @@ fn write_cache(path: &Path, token: &Held) -> Result<()> {
     written
 }
 
-/// The token cached at `path` if it is good for at least [`MIN_REMAINING_SECS`] at
-/// `now`, or else one from `mint`, which then replaces the cache. A cache that
+/// The token cached at `path` if it was minted for `identity` and is good for at
+/// least [`MIN_REMAINING_SECS`] at `now`, or else one from `mint`, which then
+/// replaces the cache. A cache that
 /// cannot be written is reported on stderr and does not stop the token.
 ///
 /// # Errors
 /// What `mint` failed with, as a [`CallError`], or a token that is not well formed.
-async fn serve_from<F, Fut>(path: &Path, now: i64, mint: F) -> Result<Zeroizing<String>>
+async fn serve_from<F, Fut>(
+    path: &Path,
+    now: i64,
+    identity: &Identity,
+    mint: F,
+) -> Result<Zeroizing<String>>
 where
     F: FnOnce() -> Fut,
     Fut: Future<Output = Result<GithubTokenResponse, CallError>>,
 {
-    if let Some(cached) = read_cache(path, now) {
+    if let Some(cached) = read_cache(path, now, identity) {
         return Ok(cached.token);
     }
-    let fresh = Held::from(mint().await?);
+    let fresh = Held::new(mint().await?, identity.clone());
     if !well_formed(&fresh.token) {
         return Err(anyhow!("the broker sent a token that is not well formed"));
     }
@@ -229,12 +270,20 @@ where
     Ok(fresh.token)
 }
 
-/// The cached token, or a new one from the broker when the cache holds no good one.
+/// The cached token, or a new one from the broker of `config` when the cache holds
+/// no good one for its agent.
 ///
 /// # Errors
 /// If the state directory is unusable, or as [`serve_from`].
-pub async fn cached_or_mint(client: &Client, now: i64) -> Result<Zeroizing<String>> {
-    serve_from(&cache_path()?, now, || client.github_token()).await
+pub async fn cached_or_mint(
+    config: &Config,
+    client: &Client,
+    now: i64,
+) -> Result<Zeroizing<String>> {
+    serve_from(&cache_path()?, now, &Identity::of(config), || {
+        client.github_token()
+    })
+    .await
 }
 
 /// Delete the cached token if it was minted under `grant`, as when the grant is
@@ -265,13 +314,15 @@ fn is_no_grant(e: &anyhow::Error) -> bool {
 /// usable, and otherwise as [`explain`] says.
 pub async fn obtain(caller: Caller) -> Result<Zeroizing<String>> {
     let (config, client) = crate::client()?;
-    match cached_or_mint(&client, unix_now()).await {
+    match cached_or_mint(&config, &client, unix_now()).await {
         Ok(token) => Ok(token),
         Err(e) if is_no_grant(&e) => {
             let dir = std::env::current_dir().ok();
             let goal = goal_for(caller, dir.as_deref())?;
             request::request_github_for_tool(&config, &client, goal).await?;
-            cached_or_mint(&client, unix_now()).await.map_err(explain)
+            cached_or_mint(&config, &client, unix_now())
+                .await
+                .map_err(explain)
         }
         Err(e) => Err(explain(e)),
     }

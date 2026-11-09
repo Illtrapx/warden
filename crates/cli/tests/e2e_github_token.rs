@@ -5,10 +5,10 @@
 //! or changes the configuration of whoever runs it.
 
 use std::fs;
-use std::io::Write as _;
+use std::io::{BufRead as _, BufReader, Read as _, Write as _};
 use std::os::unix::fs::{OpenOptionsExt as _, PermissionsExt as _};
 use std::path::PathBuf;
-use std::process::{Child, Command, Output, Stdio};
+use std::process::{Child, ChildStderr, Command, Output, Stdio};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde_json::json;
@@ -333,6 +333,121 @@ async fn token_without_grant_exits_5_with_guidance_when_denied() {
     assert!(said.contains("ask the owner"), "{said}");
     assert!(s.upstream.received().is_empty());
     assert!(!s.machine.cache().exists());
+}
+
+/// Read `child`'s stderr until it says it is waiting for approval. Returns what it
+/// said so far and the rest of the stream.
+async fn waiting(child: &mut Child) -> (String, BufReader<ChildStderr>) {
+    let mut stderr = BufReader::new(child.stderr.take().unwrap());
+    tokio::task::spawn_blocking(move || {
+        let mut said = String::new();
+        while !said.contains("waiting for approval") {
+            let read = stderr.read_line(&mut said).unwrap();
+            assert!(read > 0, "ended without waiting: {said}");
+        }
+        (said, stderr)
+    })
+    .await
+    .unwrap()
+}
+
+fn spawn_token(s: &Setup, dir: &str) -> Child {
+    let dir = s.machine.root.path().join(dir);
+    fs::create_dir_all(&dir).unwrap();
+    s.machine
+        .warden()
+        .args(["github", "token"])
+        .current_dir(dir)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap()
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_automatic_request_waits_on_one_already_pending_and_leaves_it_on_ctrl_c() {
+    let s = setup().await;
+    let first = s
+        .machine
+        .warden()
+        .args(["request", "github", "--goal", "push the fix"])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let token = CapturingNotifier::token(&s.broker.capture.next().await);
+
+    // An explicit request with another fingerprint still refuses to wait on it.
+    let other = s
+        .machine
+        .warden()
+        .args(["request", "github", "--goal", "something else"])
+        .output()
+        .unwrap();
+    assert_eq!(other.status.code(), Some(1), "{}", text(&other.stderr));
+    assert!(
+        text(&other.stderr).contains("fingerprint differs"),
+        "{}",
+        text(&other.stderr)
+    );
+
+    // Ctrl-C on a command waiting on a request made elsewhere leaves it pending.
+    let mut interrupted = spawn_token(&s, "elsewhere");
+    let (said, mut rest) = waiting(&mut interrupted).await;
+    assert!(said.contains("made elsewhere"), "{said}");
+    rustix::process::kill_process(
+        rustix::process::Pid::from_child(&interrupted),
+        rustix::process::Signal::INT,
+    )
+    .unwrap();
+    let out = wait(interrupted).await;
+    assert_eq!(out.status.code(), Some(130));
+    let mut said = String::new();
+    rest.read_to_string(&mut said).unwrap();
+    assert!(said.contains("left pending"), "{said}");
+    assert_eq!(text(&out.stdout), "");
+
+    // The gh wrapper, from another directory, waits on the same request; one
+    // approval serves both.
+    script_token(&s, TOKEN);
+    let mut second = spawn_token(&s, "another/repo");
+    let (said, _rest) = waiting(&mut second).await;
+    assert!(said.contains("made elsewhere"), "{said}");
+    let approved = s.broker.approve(&token, Window::D30).await;
+    assert!(approved.status.is_success(), "{}", approved.body);
+    let first = wait(first).await;
+    assert_eq!(first.status.code(), Some(0), "{}", text(&first.stderr));
+    let second = wait(second).await;
+    assert_eq!(second.status.code(), Some(0));
+    assert_eq!(text(&second.stdout), format!("{TOKEN}\n"));
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn other_kinds_still_refuse_a_pending_request_of_another_fingerprint() {
+    let s = setup().await;
+    let mut first = s
+        .machine
+        .warden()
+        .args(["request", "signing", "--goal", "sign my commits"])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+    s.broker.capture.next().await;
+    let other = s
+        .machine
+        .warden()
+        .args(["request", "signing", "--goal", "something else"])
+        .output()
+        .unwrap();
+    first.kill().unwrap();
+    first.wait().unwrap();
+    assert_eq!(other.status.code(), Some(1), "{}", text(&other.stderr));
+    assert!(
+        text(&other.stderr).contains("fingerprint differs"),
+        "{}",
+        text(&other.stderr)
+    );
 }
 
 /// No broker is configured here: answering at all would mean calling one.

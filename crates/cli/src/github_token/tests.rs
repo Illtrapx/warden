@@ -9,7 +9,7 @@ use warden_broker_proto::Id;
 use warden_broker_proto::github_token::GithubTokenResponse;
 
 use super::{
-    Caller, Held, MIN_REMAINING_SECS, Stored, explain, goal_for, read_cache, serve_from,
+    Caller, Held, Identity, MIN_REMAINING_SECS, Stored, explain, goal_for, read_cache, serve_from,
     well_formed, write_cache,
 };
 use crate::client::CallError;
@@ -30,19 +30,31 @@ fn dir() -> Dir {
     Dir { _dir: dir, cache }
 }
 
+fn identity() -> Identity {
+    Identity {
+        agent: "build-agent".to_owned(),
+        server: "https://warden.example.ts.net/".to_owned(),
+    }
+}
+
 fn token(token: &str, expires_at: i64) -> Held {
-    Held::from(GithubTokenResponse {
+    let response = GithubTokenResponse {
         token: token.to_owned(),
         expires_at,
         grant_id: Id::random(),
-    })
+    };
+    Held::new(response, identity())
 }
 
-/// Serve from `path` at [`NOW`], minting [`FRESH`] when needed; returns the token
-/// and whether a mint happened.
+/// Serve from `path` at [`NOW`] as [`identity`], minting [`FRESH`] when needed;
+/// returns the token and whether a mint happened.
 async fn serve(path: &Path) -> (String, bool) {
+    serve_as(path, &identity()).await
+}
+
+async fn serve_as(path: &Path, identity: &Identity) -> (String, bool) {
     let minted = Cell::new(false);
-    let token = serve_from(path, NOW, || {
+    let token = serve_from(path, NOW, identity, || {
         minted.set(true);
         ready(Ok(GithubTokenResponse {
             token: FRESH.to_owned(),
@@ -87,12 +99,12 @@ async fn cache_with_wrong_mode_or_garbage_is_replaced() {
         assert_eq!(stored_token(&d.cache), FRESH, "{loose:o}");
     }
     let bad_token = format!(
-        r#"{{"token":"ghs_a\nb","expires_at":{},"grant_id":"{}"}}"#,
+        r#"{{"token":"ghs_a\nb","expires_at":{},"grant_id":"{}","agent":"build-agent","server":"https://warden.example.ts.net/"}}"#,
         NOW + 3600,
         Id::random()
     );
     let unknown_field = format!(
-        r#"{{"token":"ghs_a","expires_at":{},"grant_id":"{}","x":1}}"#,
+        r#"{{"token":"ghs_a","expires_at":{},"grant_id":"{}","agent":"build-agent","server":"https://warden.example.ts.net/","x":1}}"#,
         NOW + 3600,
         Id::random()
     );
@@ -112,6 +124,39 @@ async fn cache_with_wrong_mode_or_garbage_is_replaced() {
             "{garbage:.40}"
         );
         assert_eq!(stored_token(&d.cache), FRESH);
+    }
+}
+
+#[tokio::test]
+async fn cache_for_another_agent_or_broker_is_replaced() {
+    let others = [
+        Identity {
+            agent: "other-agent".to_owned(),
+            ..identity()
+        },
+        Identity {
+            server: "https://other.example.ts.net/".to_owned(),
+            ..identity()
+        },
+    ];
+    for other in others {
+        let d = dir();
+        write_cache(&d.cache, &token(CACHED, NOW + 3600)).unwrap();
+        assert_eq!(
+            serve_as(&d.cache, &identity()).await,
+            (CACHED.to_owned(), false)
+        );
+        assert_eq!(
+            serve_as(&d.cache, &other).await,
+            (FRESH.to_owned(), true),
+            "{other:?}"
+        );
+        assert_eq!(stored_token(&d.cache), FRESH);
+        // Now the cache is the other identity's, and this one's is not served.
+        assert_eq!(
+            serve_as(&d.cache, &identity()).await,
+            (FRESH.to_owned(), true)
+        );
     }
 }
 
@@ -151,7 +196,7 @@ async fn cache_file_created_0600() {
 #[tokio::test]
 async fn a_token_that_is_not_well_formed_is_refused_and_not_cached() {
     let d = dir();
-    let refused = serve_from(&d.cache, NOW, || {
+    let refused = serve_from(&d.cache, NOW, &identity(), || {
         ready(Ok(GithubTokenResponse {
             token: "ghs_a\npassword=other".to_owned(),
             expires_at: NOW + 3600,
@@ -171,13 +216,13 @@ async fn a_token_that_is_not_well_formed_is_refused_and_not_cached() {
 #[tokio::test]
 async fn a_failed_mint_keeps_its_call_error() {
     let d = dir();
-    let e = serve_from(&d.cache, NOW, || {
+    let e = serve_from(&d.cache, NOW, &identity(), || {
         ready(Err(CallError::Refused("broker refused (403)".to_owned())))
     })
     .await
     .unwrap_err();
     assert!(e.downcast_ref::<CallError>().is_some());
-    assert!(read_cache(&d.cache, NOW).is_none());
+    assert!(read_cache(&d.cache, NOW, &identity()).is_none());
 }
 
 fn exit_of(e: CallError) -> (u8, String) {
