@@ -10,7 +10,7 @@ All notable changes to this project are recorded here. The format follows
 
 - GitHub tokens for agents, so that `git push` and `gh` work with no personal access token
   or deploy key on the agent's machine. The broker holds the private key of a GitHub App
-  you create (a 1Password item tagged `warden:github-app`, with the fields `app_id`,
+  you create (a 1Password item tagged `warden:github-app`, with fields labelled `app_id`,
   `installation_id` and `private_key`; the local backend cannot hold one) and mints an
   installation token for an agent that has a `github_token` grant. The token lasts GitHub's
   hour, covers every repository the App is installed on, and has `contents`,

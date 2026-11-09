@@ -21,8 +21,9 @@ fn summaries(ids: &[&str]) -> Value {
     )
 }
 
-fn field(id: &str, value: &str) -> Value {
-    json!({"id": id, "type": "CONCEALED", "label": id, "value": value})
+/// A field as the 1Password apps make it: a random id, and the label the owner typed.
+fn field(label: &str, value: &str) -> Value {
+    json!({"id": format!("x{}", label.len()), "type": "CONCEALED", "label": label, "value": value})
 }
 
 fn item(id: &str, fields: &[Value]) -> Value {
@@ -84,14 +85,14 @@ async fn two_github_app_items_is_an_error() {
 async fn github_app_missing_field_is_invalid() {
     for missing in ["app_id", "installation_id", "private_key"] {
         let mut fields = full(RSA2048_PKCS8);
-        fields.retain(|f| f["id"] != missing);
+        fields.retain(|f| f["label"] != missing);
         let server = with_item(fields).await;
         let err = backend(&server).github_app().await.unwrap_err();
         assert!(reason(&err).contains(missing), "{missing}: {err:?}");
 
         let mut blank = full(RSA2048_PKCS8);
         for f in &mut blank {
-            if f["id"] == missing {
+            if f["label"] == missing {
                 f["value"] = json!("  ");
             }
         }
@@ -99,6 +100,28 @@ async fn github_app_missing_field_is_invalid() {
         let err = backend(&server).github_app().await.unwrap_err();
         assert!(reason(&err).contains(missing), "{missing}: {err:?}");
     }
+}
+
+#[tokio::test]
+async fn github_app_fields_are_matched_by_label_not_id() {
+    // The id says app_id, the label says something else: not the field.
+    let mut fields = full(RSA2048_PKCS8);
+    fields[0] = json!({"id": "app_id", "type": "STRING", "label": "App", "value": APP_ID});
+    let server = with_item(fields).await;
+    let err = backend(&server).github_app().await.unwrap_err();
+    assert!(reason(&err).contains("field \"app_id\""), "{err:?}");
+}
+
+#[tokio::test]
+async fn github_app_repeated_label_is_refused() {
+    let mut fields = full(RSA2048_PKCS8);
+    fields.push(field("installation_id", "999"));
+    let server = with_item(fields).await;
+    let err = backend(&server).github_app().await.unwrap_err();
+    assert!(
+        reason(&err).contains("\"installation_id\" appears more than once"),
+        "{err:?}"
+    );
 }
 
 #[tokio::test]

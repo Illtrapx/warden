@@ -964,7 +964,7 @@ What holds:
 - **GitHub's answer is not passed on.** The agent gets fixed texts for a refusal or an
   outage, so nothing GitHub said, including an echo of the JWT or token, reaches it. The
   client trusts the system roots, refuses redirects and reads at most 64 KiB.
-- **Every mint and every refusal is recorded**: `github_token_minted` holds the grant, agent,
+- **Every mint and every refusal is recorded**. A `github_token_minted` entry can be followed by a `github_token_refused` entry for the same call, when the grant ended or was replaced during the mint: the token was then not given out. `github_token_minted` holds the grant, agent,
   installation, permissions and expiry, and `github_token_refused` the reason. Beyond 30
   refusals a minute per agent they are counted in `github_token_refusals_held`, through the
   limiter commit signing uses, so refused calls cannot fill the log. A body over the route's

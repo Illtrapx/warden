@@ -10,7 +10,7 @@ sessions are closed. On an SSH certificate target new logins stop, but a session
 already open keeps running until it ends or is ended on the target. The agent's
 machine holds no reusable SSH key, API token or target password, only the agent's
 own identity key, which can ask for access and use active grants but cannot approve
-anything.
+anything. The exception is a [GitHub token](#github-tokens), which the agent holds for an hour.
 
 The [project page](https://pecheriere.github.io/warden/) shows the flow, the
 use cases and how to start.

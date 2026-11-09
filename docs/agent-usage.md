@@ -788,6 +788,7 @@ When no token can be had, `git` or `gh` fails, with the reason on stderr:
 | "the GitHub App changed; request a new grant" (exit 5). | The owner changed the App or its installation. `warden request github --goal "…"`. |
 | The grant ended while the token was being minted (exit 5). | If the owner has just approved a new grant, run the command once more. Otherwise tell the owner. |
 | "GitHub tokens are not configured on this broker" (exit 1). | Tell the owner. |
+| The broker refused the request when it was made, for example because the agent is over its [request limits](configuration.md#request-limits) (exit 1, with the wait in the message). | Wait that long, or reuse the request already pending. Do not retry sooner. |
 | GitHub or the broker is unavailable, or the broker cannot be reached (exit 1). | As in [When the broker is unreachable](#when-the-broker-is-unreachable): tell the owner and try again once it answers. `warden doctor` checks the connection. |
 
 Do not turn the helper off, give git another credential or ask for a token another way to get

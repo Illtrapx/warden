@@ -4,7 +4,7 @@ This document records the intent and design of warden. It describes the full
 v1 design; the current release (0.10.0) implements the SSH certificate mode
 (§8.1), the SSH relay mode (§8.2) and the HTTP proxy mode (§8.3), and also signs
 commits through the broker, which the
-[threat model](threat-model.md#commit-signing) describes. Unreleased, it also mints
+[threat model](threat-model.md#commit-signing) describes. It also mints
 GitHub tokens for agents, an hour at a time, the one access where an agent holds a
 credential: see [GitHub tokens](threat-model.md#github-tokens). Where the
 implementation deviates from this design, the
@@ -45,7 +45,9 @@ and secure by construction.
 2. One approval covers a **goal for a time window**, not each command.
 3. The agent never receives a reusable secret: SSH uses ephemeral keys and
    short-lived certificates; relay and proxy credentials never leave the
-   broker. Its own identity key (§9) is the one thing it keeps.
+   broker. Its own identity key (§9) is the one thing it keeps, with one
+   exception: a GitHub token, which the agent holds for an hour and which
+   revoking does not recall ([threat model](threat-model.md#github-tokens)).
 4. Every request, decision and grant, and every use that passes through warden,
    is recorded in an audit log. Certificate logins go straight to the target, so
    only the target's `sshd` logs them.

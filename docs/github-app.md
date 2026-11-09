@@ -78,12 +78,14 @@ or organization.
    that is not RSA or is shorter than 2048 bits.
 8. **Install App**, then **Only select repositories**, and choose the repositories the agents
    may reach. Never **All repositories**. The installation id is the number at the end of the
-   installation's settings URL, `https://github.com/settings/installations/<installation id>`.
+   installation's settings URL, `https://github.com/settings/installations/<installation id>`,
+   or `https://github.com/organizations/<org>/settings/installations/<installation id>` for
+   an organization.
 
 ## Put the App in 1Password
 
-Add one item to warden's vault, tagged `warden:github-app`, with the fields `app_id`,
-`installation_id` and `private_key`. The exact rules are in
+Add one item to warden's vault, tagged `warden:github-app`, with three custom fields
+labelled `app_id`, `installation_id` and `private_key` (text for the ids, concealed for the key). The exact rules are in
 [1Password items](1password-items.md#github-app). Paste the whole `.pem` file, header and
 footer lines included, into `private_key`, and delete the downloaded file.
 

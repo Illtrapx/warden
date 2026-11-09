@@ -16,7 +16,7 @@ repair.
 | Who edited what | 1Password's item history and usage reports. | Nothing, unless you add it. warden does not know who changed a file. |
 
 Everything else is unchanged: every grant still needs your passkey, is bounded in
-time and scope, and is audited, and the agent still never receives a secret. The
+time and scope, and is audited, and the agent still never receives a secret: that holds here because GitHub tokens, which an agent does hold, are unavailable on this backend. The
 [threat model](threat-model.md#the-local-secret-backend) has the details.
 
 Use this to try warden for real without a 1Password account, or on a host you are

@@ -152,9 +152,12 @@ for the old key: see [rotating the key](threat-model.md#rotating-the-commit-sign
 ## GitHub App
 
 Tag: `warden:github-app`. Optional: with no such item, GitHub tokens are off. More than one
-is an error, and the local backend cannot hold one. An item with three fields, by id:
+is an error, and the local backend cannot hold one. An item with three fields, matched by label like the other items (case-sensitive, each label
+once):
 `app_id` (the App's id), `installation_id` (a positive number) and `private_key` (the
-App's RSA private key as PEM, PKCS#1 or PKCS#8, unencrypted, at least 2048 bits). warden
+App's RSA private key as PEM, PKCS#1 or PKCS#8, unencrypted, at least 2048 bits). Add them in
+1Password as custom fields, text for the two ids and concealed for the key; the item's category
+does not matter. warden
 reads the item for each approval page and token, and never gives the key out. Changing
 the App or installation ends every grant made for the old one; replacing only the key
 does not.

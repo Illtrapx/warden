@@ -3,6 +3,7 @@
 //! The App's RSA private key signs the short JWT GitHub exchanges for an installation
 //! token. It is only ever used through `aws-lc-rs`, and never printed.
 
+use std::collections::HashMap;
 use std::fmt;
 use std::sync::Arc;
 
@@ -16,7 +17,7 @@ use warden_broker_proto::{GithubTokenGrant, Window};
 use zeroize::Zeroizing;
 
 use super::PolicyError;
-use super::onepassword::{SecretField, required_field};
+use super::onepassword::SecretField;
 
 /// The shortest RSA modulus accepted, in bytes (2048 bits): GitHub's own minimum.
 const MIN_MODULUS_BYTES: usize = 256;
@@ -24,10 +25,11 @@ const MIN_MODULUS_BYTES: usize = 256;
 /// The longest App id accepted. GitHub's are short numbers or `Iv1.`-style client ids.
 const MAX_APP_ID_CHARS: usize = 64;
 
-/// Item fields, by id.
+/// Item fields, by label.
 const APP_ID_FIELD: &str = "app_id";
 const INSTALLATION_ID_FIELD: &str = "installation_id";
 const PRIVATE_KEY_FIELD: &str = "private_key";
+const LABELS: [&str; 3] = [APP_ID_FIELD, INSTALLATION_ID_FIELD, PRIVATE_KEY_FIELD];
 
 fn app_error(reason: &str) -> PolicyError {
     PolicyError::GithubApp(reason.to_owned())
@@ -146,18 +148,34 @@ fn parse_rsa_key(pem: &[u8]) -> Result<KeyPair, PolicyError> {
     Ok(key)
 }
 
-/// Read the GitHub App from the fields of its item. `title` names the item in
-/// reasons; no reason quotes a field value.
+/// Read the GitHub App from the fields of its item, matched by label like every
+/// other policy item (1Password gives fields added in its apps random ids). `title`
+/// names the item in reasons; no reason quotes a field value.
 ///
 /// # Errors
-/// [`PolicyError::GithubApp`] naming the field that is missing or unusable.
+/// [`PolicyError::GithubApp`] naming the field that is missing, repeated or unusable.
 pub(super) fn parse_item(title: &str, fields: &[SecretField]) -> Result<GithubAppKey, PolicyError> {
-    let field = |id: &str| -> Result<&str, PolicyError> {
-        required_field(fields, id).ok_or_else(|| {
-            PolicyError::GithubApp(format!(
-                "item \"{title}\": field with id \"{id}\" is missing or empty"
-            ))
-        })
+    let mut by_label: HashMap<&str, &str> = HashMap::new();
+    for field in fields {
+        let (Some(label), Some(value)) = (field.label.as_deref(), field.value.as_deref()) else {
+            continue;
+        };
+        if LABELS.contains(&label) && by_label.insert(label, value.as_str()).is_some() {
+            return Err(PolicyError::GithubApp(format!(
+                "item \"{title}\": field \"{label}\" appears more than once"
+            )));
+        }
+    }
+    let field = |label: &str| -> Result<&str, PolicyError> {
+        by_label
+            .get(label)
+            .map(|v| v.trim())
+            .filter(|v| !v.is_empty())
+            .ok_or_else(|| {
+                PolicyError::GithubApp(format!(
+                    "item \"{title}\": field \"{label}\" is missing or empty"
+                ))
+            })
     };
     let in_item = |e: PolicyError| match e {
         PolicyError::GithubApp(reason) => {
@@ -165,21 +183,20 @@ pub(super) fn parse_item(title: &str, fields: &[SecretField]) -> Result<GithubAp
         }
         other => other,
     };
-    let app_id = field(APP_ID_FIELD)?.trim().to_owned();
+    let app_id = field(APP_ID_FIELD)?.to_owned();
     let installation_id = field(INSTALLATION_ID_FIELD)?
-        .trim()
         .parse::<u64>()
         .ok()
         .filter(|id| *id != 0)
         .ok_or_else(|| {
             PolicyError::GithubApp(format!(
-                "item \"{title}\": field with id \"{INSTALLATION_ID_FIELD}\" must be a positive number"
+                "item \"{title}\": field \"{INSTALLATION_ID_FIELD}\" must be a positive number"
             ))
         })?;
-    let pem = Zeroizing::new(field(PRIVATE_KEY_FIELD)?.trim().as_bytes().to_vec());
+    let pem = Zeroizing::new(field(PRIVATE_KEY_FIELD)?.as_bytes().to_vec());
     GithubAppKey::new(app_id, installation_id, &pem).map_err(|e| match e {
         PolicyError::GithubApp(reason) if reason.contains("private key") => in_item(
-            PolicyError::GithubApp(format!("field with id \"{PRIVATE_KEY_FIELD}\": {reason}")),
+            PolicyError::GithubApp(format!("field \"{PRIVATE_KEY_FIELD}\": {reason}")),
         ),
         other => in_item(other),
     })
