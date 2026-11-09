@@ -8,8 +8,8 @@ use tokio::sync::mpsc;
 use warden_broker::identity::IdentitySource;
 use warden_broker::notify::{Doorbell, Notifier, NotifyError};
 use warden_broker::policy::{
-    ApiSecretPolicy, CaKey, CommitSigningKey, PolicyError, RelayCredential, SecretBackend,
-    SecretValue, SshTarget,
+    ApiSecretPolicy, CaKey, CommitSigningKey, GithubAppKey, PolicyError, RelayCredential,
+    SecretBackend, SecretValue, SshTarget,
 };
 use warden_broker_proto::{SecretName, TargetName};
 use zeroize::Zeroizing;
@@ -84,6 +84,14 @@ impl SecretBackend for DemoBackend {
     }
 
     async fn has_ssh_ca(&self) -> Result<bool, PolicyError> {
+        Ok(false)
+    }
+
+    async fn github_app(&self) -> Result<GithubAppKey, PolicyError> {
+        Err(PolicyError::NoGithubApp)
+    }
+
+    async fn has_github_app(&self) -> Result<bool, PolicyError> {
         Ok(false)
     }
 

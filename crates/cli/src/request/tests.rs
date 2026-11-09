@@ -186,3 +186,17 @@ fn older_broker_grant_wider_than_requested_is_refused() {
     );
     assert!(check_scope_not_wider(&api_grant(&["GET"], "/v1x"), None, Some("/v1")).is_err());
 }
+
+#[test]
+fn a_request_for_git_or_gh_asks_for_no_more_than_the_broker_allows() {
+    use warden_broker_proto::Window;
+
+    use super::tool_window;
+
+    assert_eq!(tool_window(None), Window::D30);
+    assert_eq!(tool_window(Some(Window::D30)), Window::D30);
+    assert_eq!(tool_window(Some(Window::D7)), Window::D7);
+    assert_eq!(tool_window(Some(Window::D1)), Window::D1);
+    // A broker that allowed longer still gets at most 30 days.
+    assert_eq!(tool_window(Some(Window::D90)), Window::D30);
+}

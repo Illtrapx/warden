@@ -60,6 +60,11 @@ ed25519-dalek = { version = "2.2.0", default-features = false, features = ["pkcs
 # negotiated hash, so a holder of the pinned key could still sign with
 # SHA-1. No DSA, no compression.
 russh = { version = "=0.65.0", default-features = false, features = ["aws-lc-rs", "rsa"] }
+# Signs the GitHub App JWT (RS256) with the App's RSA private key. This is the
+# only code that does an RSA private-key operation; the `rsa` crate is never
+# used with a private key. Already in the tree through rustls and russh, at the
+# version Cargo.lock has. The default features add nothing warden uses.
+aws-lc-rs = { version = "1.18.2", default-features = false, features = ["aws-lc-sys"] }
 # Verifies agents' ECDSA P-256 request signatures. 0.14, not the 0.13 behind
 # `ssh-key` 0.6's `p256` feature: 0.13 needs crypto-bigint 0.5, which
 # RUSTSEC-2026-0387 affects and no release fixes. russh already links 0.14.

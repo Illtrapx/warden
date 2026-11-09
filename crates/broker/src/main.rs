@@ -18,6 +18,7 @@ use warden_broker::audit::AuditLog;
 use warden_broker::config::{
     BackendSettings, Config, DEFAULT_AUDIENCE_PATH, UrlTransport, parse_public_url,
 };
+use warden_broker::github_app::GithubApi;
 use warden_broker::identity::TailscaleServeIdentity;
 use warden_broker::notify::{ChannelSettings, Fallback, Notifier};
 use warden_broker::policy::local::{ACCESS_NOTE, Unverified, seal_policy_file};
@@ -589,6 +590,7 @@ async fn build_app(config: &Arc<Config>) -> Result<App> {
     .with_limits(config.requests)
     .with_commit_signing_max(config.commit_signing_max_window)
     .with_commit_signing_per_day(config.commit_signing_max_per_day)
+    .with_github_token_max(config.github_token_max_window)
     .with_link_hosts(config.link_hosts.clone())
     .with_call_limits(config.proxy.max_calls_per_agent, config.proxy.max_calls);
     let passkeys = Passkeys::new(
@@ -608,6 +610,7 @@ async fn build_app(config: &Arc<Config>) -> Result<App> {
         requests: requests.clone(),
         passkeys: Arc::new(passkeys),
         audience,
+        github: GithubApi::public(),
     };
     let (api, approval) = build_routers(state);
     Ok(App {

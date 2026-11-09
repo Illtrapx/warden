@@ -45,6 +45,7 @@ Values are never echoed in errors.
 | `WARDEN_REQUEST_LIMIT_WINDOW_SECS` | `600` (10 minutes) | Length of that sliding window, 60 to 3600 seconds. |
 | `WARDEN_COMMIT_SIGNING_MAX_WINDOW` | `30d` | The longest [commit signing](threat-model.md#commit-signing) grant: `1d`, `7d`, `30d` or `90d`. Lowering it does not shorten grants already made. It cannot apply to anything else: no other grant can pass 4 hours. |
 | `WARDEN_COMMIT_SIGNING_MAX_PER_DAY` | `5000` | Signatures per commit signing grant per UTC day, 1 to 1000000. At the limit commits fail until the next day, and warden tries once to notify the owner. See [the threat model](threat-model.md#commit-signing). |
+| `WARDEN_GITHUB_TOKEN_MAX_WINDOW` | `30d` | The longest [GitHub token](github-app.md) grant: `1d`, `7d` or `30d`. Anything else is a startup error, and so is a value that is set but empty. Lowering it does not shorten grants already made. It has no effect on the 1-hour life of a token, which is GitHub's. |
 | `WARDEN_REQUEST_LINK_HOSTS` | unset (no links) | The hosts a request may link to, separated by commas. See [Links in requests](#links-in-requests). |
 | `WARDEN_RELAY_PUBLIC_ADDR` | unset | Where agents reach the SSH relay, `host:port`. Unset turns the relay off: requests for relay targets are refused. |
 | `WARDEN_RELAY_LISTEN` | `127.0.0.1:2222` | The SSH relay listener. Used only when `WARDEN_RELAY_PUBLIC_ADDR` is set. |
@@ -198,6 +199,7 @@ deployment exits 7 with `--strict`.
 | `connect.token-read-only` | Never. | Always: Connect does not report a token's permissions, and doctor will not attempt a write. Check how the token was created. |
 | `ssh-ca` | The CA key loads, or there is no CA item and no certificate target needs one. | Connect or the vault is not usable, or a target item cannot be read. |
 | `commit-signing` | The commit signing key loads, or none is configured, which leaves signing off. A key that cannot be used, or that is also the SSH CA key, is a failure. | Connect or the vault is not usable, or the key cannot be read. |
+| `github-app` | The GitHub App loads, or none is configured, which leaves GitHub tokens off. An item that cannot be used is a failure: several tagged `warden:github-app`, a missing or empty field, an `installation_id` that is not a positive number, an encrypted, non-RSA or short key, or a body Connect sent that cannot be read. It cannot tell whether GitHub still accepts the App. | Connect or the vault is not usable, or Connect could not answer for the item. |
 | `local.policy`, `local.entries`, `local.host-boundary` | Instead of `connect.*`, with `WARDEN_SECRET_BACKEND=local`. See [Checking it](local-backend.md#checking-it). | |
 | `notify` | Never. | Without `--send-test-notification`: nothing was sent. |
 | `notify.<channel>` | With the flag: the channel accepts the message. | Never. |
@@ -332,18 +334,21 @@ cargo install --locked --git https://github.com/pecheriere/warden --tag v0.10.0 
 | `warden request ssh <target> --user <user> --for <window> --goal "<goal>" [--session <label>] [--link <url>]` | Asks for SSH access and waits for the decision. `--session` defaults to `WARDEN_SESSION`; see [Telling sessions apart](agent-usage.md#telling-sessions-apart). |
 | `warden request api <secret> [--methods <M,…>] [--path <prefix>] --for <window> --goal "<goal>" [--session <label>] [--link <url>]` | Asks for brokered API calls and waits. Read-only (`GET`, `HEAD`) without `--methods`. |
 | `warden request signing [--for <1d\|7d\|30d\|90d>] --goal "<goal>" [--session <label>] [--link <url>]` | Asks for commit signing, 30 days by default, and waits. See [Signing commits](agent-usage.md#signing-commits). |
+| `warden request github [--for <1d\|7d\|30d>] --goal "<goal>" [--session <label>] [--link <url>]` | Asks for [GitHub tokens](github-app.md), 30 days by default, and waits. See [GitHub tokens](agent-usage.md#github-tokens). |
 | `warden request cancel <id>` | Withdraws one of this agent's pending requests. |
-| `warden request collect <grant>` | Starts using an `api` grant approved after the `warden request` that asked for it was gone. Refuses an SSH grant, whose key was lost with that run, and a commit signing grant, which needs nothing on the machine. See [Agent usage](agent-usage.md#if-the-warden-request-is-gone). |
+| `warden request collect <grant>` | Starts using an `api` grant approved after the `warden request` that asked for it was gone. Refuses an SSH grant, whose key was lost with that run, and a commit signing or GitHub token grant, which need nothing on the machine. See [Agent usage](agent-usage.md#if-the-warden-request-is-gone). |
 | `warden ssh <target> [-- <command>…]` | Runs `ssh` through the active grant for the target that stays valid longest. |
 | `warden ssh-config <target> [--output <file>] [--json] [--min-remaining <duration>]` | Prints an `ssh_config` `Host` block for that same grant, for tools that run `ssh` themselves. See [Tools that run ssh themselves](agent-usage.md#tools-that-run-ssh-themselves). |
 | `warden http <secret> <METHOD> <url> [-H 'Name: value']… [-d <body> \| --data-file <path\|->] [-i] [--fail]` | Makes one HTTPS call through an `api` grant. |
 | `warden setup git [--local]` | Has git sign every commit through the broker: sets `gpg.format`, `gpg.ssh.program`, `user.signingkey` and `commit.gpgsign`, in git's global configuration or with `--local` the repository's, and prints what it replaced. Needs an active commit signing grant, to read the broker's public key. |
+| `warden setup github` | Has git and `gh` take GitHub tokens from warden: points git's global `credential.https://github.com.helper` at warden alone (an empty value first, then `!<warden> git-credential`), and writes the `gh` wrapper `~/.local/bin/gh`, which sets `GH_TOKEN` from `warden github token`. Refuses to replace a `gh` it did not write, and warns when `~/.local/bin` is not before the real `gh` on `PATH`. Writes no wrapper if `gh` is not on `PATH`. Run it again after the warden binary moves. Needs no grant. See [GitHub tokens](agent-usage.md#github-tokens). |
+| `warden github token` | Prints a GitHub token on stdout and nothing else: the cached one while it has 5 minutes left, otherwise a new one from the broker. With no active grant it asks the owner for one and waits. The `gh` wrapper runs it. |
 | `warden doctor [--strict]` | Checks this machine's setup and says what to fix. See [Checking an agent machine](#checking-an-agent-machine). |
 | `warden status` | Lists the grants on this machine, and the broker's view of this agent's grants and pending requests. |
 | `warden revoke <grant>` | Revokes a grant on the broker and stops its local `ssh-agent`. |
 
-A window is `15m`, `30m`, `1h` or `4h`, and for commit signing `1d`, `7d`, `30d` or
-`90d`. Exit codes are in
+A window is `15m`, `30m`, `1h` or `4h`, for commit signing `1d`, `7d`, `30d` or
+`90d`, and for GitHub tokens `1d`, `7d` or `30d`. Exit codes are in
 [Agent usage](agent-usage.md#exit-codes).
 
 ### Checking an agent machine
@@ -361,6 +366,7 @@ exits 7 when nothing failed but a check could not run.
 | `protocol` | The broker accepts signed requests. Only for a key-signed agent, when the broker answered. | Never. |
 | `ssh-agent.key` or `bearer-key` | The `ssh-agent` holds the signing key, or the bearer key is available. | There is no usable configuration. |
 | `broker.accepts-agent` | The broker accepts one authenticated `GET /v1/grants`. A 4xx answer is a failure. | The credential is not available, or the broker is unreachable or answers 5xx. |
+| `github.token` | Git does not take GitHub credentials from warden here, or it does and warden's helper is the only one git asks for `https://github.com` (every `credential.helper` and every `credential.<url>.helper` that git matches to some `https://github.com` URL, a repository's or an owner's path included, in order, an empty value dropping those before it), it is this warden's, and the broker answers. It passes with no grant yet: the first `git` or `gh` call to GitHub asks the owner. A second helper, another warden, or a 4xx from the broker is a failure. | Git cannot run or cannot read its configuration, a helper names warden in a form doctor cannot read, the credential is not available, or the broker is unreachable or answers 5xx. |
 | `git.signing` | Git does not sign through warden here, or it does and all of it is right, with an active grant. A setting that does not match, or no grant, is a failure: commits would fail. | The credential is not available, or the broker is unreachable or answers 5xx. |
 | `version` | Never. | Always: the broker does not publish its version. Doctor prints the CLI's, to compare with `warden-server --version`. |
 
@@ -377,7 +383,7 @@ other authenticated call, which for a signed call means recording the nonce.
 | `~/.config/warden/config.toml` (or `$XDG_CONFIG_HOME/warden/config.toml`) | The server URL, the agent name and, for a key-signed agent, the public key, the `ssh-agent` socket and the pinned audience. Mode 0600; nothing secret. |
 | `WARDEN_AGENT_KEY` | A bearer key. Takes precedence over the Keychain. The only way to give a bearer key on Linux. |
 | `SSH_AUTH_SOCK` | The `ssh-agent` holding the signing key, unless `--ssh-agent-socket` was given at login. |
-| `$XDG_STATE_HOME/warden` (Linux default `~/.local/state/warden`, macOS `~/Library/Application Support/warden`) | Grant records and the `known_hosts` files of grants. Mode 0700. |
+| `$XDG_STATE_HOME/warden` (Linux default `~/.local/state/warden`, macOS `~/Library/Application Support/warden`) | Grant records, the `known_hosts` files of grants, and `github-token.json`, the cached [GitHub token](github-app.md#what-the-agent-holds) (mode 0600, for one agent and broker, served only while it has 5 minutes left). Mode 0700. |
 | `$TMPDIR/warden-<uid>/` | The sockets of the per-grant `ssh-agent`s (a short path, as Unix socket paths are limited). Mode 0700. |
 
 On Linux, `warden login` cannot store a bearer key (there is no Keychain).

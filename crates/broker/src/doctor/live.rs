@@ -17,7 +17,8 @@ use crate::config::{BackendSettings, Config};
 use crate::health::probe_target;
 use crate::notify::{ChannelSettings, Doorbell, NotifyError};
 use crate::policy::{
-    CaProbe, CommitSigningProbe, LocalBackend, LocalProbe, OnePasswordConnect, VaultProbe,
+    CaProbe, CommitSigningProbe, GithubAppProbe, LocalBackend, LocalProbe, OnePasswordConnect,
+    VaultProbe,
 };
 use crate::requests::revocation::count_waiting_read_only;
 
@@ -102,6 +103,13 @@ impl Environment for Live {
         match self {
             Self::OnePassword(connect) => connect.probe_commit_signing().await,
             Self::Local(_) => CommitSigningProbe::Unknown(NOT_CONFIGURED.to_owned()),
+        }
+    }
+
+    async fn github_app(&self) -> GithubAppProbe {
+        match self {
+            Self::OnePassword(connect) => connect.probe_github_app().await,
+            Self::Local(_) => GithubAppProbe::Unknown(NOT_CONFIGURED.to_owned()),
         }
     }
 

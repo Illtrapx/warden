@@ -4,7 +4,7 @@
 
 use maud::{Markup, html};
 
-use super::{icon, utc_parts, warning_icon};
+use super::{icon, warning_icon};
 use crate::requests::ActiveGrant;
 
 /// What a signature does and does not mean.
@@ -41,18 +41,6 @@ pub(super) fn live_note() -> Markup {
              not undo those already made."
         }
     }
-}
-
-/// When a grant ends, for one that can last months: the date, and how far off it is.
-pub(super) fn ends(not_after: i64, now: i64) -> Markup {
-    let (date, time) = utc_parts(not_after);
-    let left = (not_after - now).max(0);
-    let far = match left {
-        0..7200 => format!("{} min", (left + 59) / 60),
-        7200..172_800 => format!("{} h", left / 3600),
-        _ => format!("{} days", left / 86_400),
-    };
-    html! { span { "Ends " (date) " " (time) " (in " (far) ")" } }
 }
 
 /// The button that starts renewing `grant`, described like its Revoke button.

@@ -13,8 +13,8 @@ use super::bus::next_change;
 use super::revocation::commit_with_entries;
 use super::transition::detached;
 use super::{
-    AuditOutcome, PendingView, RequestError, Requests, Scope, begin, commit_signing,
-    note_if_not_applied, parse, record, sha256_hex,
+    AuditOutcome, PendingView, RequestError, Requests, Scope, begin, note_if_not_applied, parse,
+    record, renewal, sha256_hex,
 };
 use crate::audit::AuditEvent;
 use crate::ssh_ca;
@@ -274,7 +274,7 @@ impl Requests {
         let id: Id = parse(&row, "id")?;
         let agent: AgentName = parse(&row, "agent")?;
         let view = serde_json::to_string(&grant)?;
-        let renews = matches!(grant.access, GrantAccess::CommitSigning(_));
+        let renews = renewal::replaced_kind(&grant.access);
         let mut events = vec![AuditEvent::Approved {
             id: id.clone(),
             grant_id: grant.grant_id.clone(),
@@ -288,8 +288,8 @@ impl Requests {
                 not_after: grant.not_after,
             });
         }
-        if renews {
-            events.extend(self.renewal_events(&agent).await?);
+        if let Some(kind) = renews {
+            events.extend(self.renewal_events(&agent, kind).await?);
         }
         let transition = format!("approval of request {id}");
         record(&self.audit, events, &transition).await?;
@@ -326,8 +326,8 @@ impl Requests {
             .bind(&view)
             .execute(&mut *tx)
             .await?;
-            let renewed = if renews {
-                commit_signing::end_renewed(&mut tx, &agent, &grant.grant_id, self.clock.now())
+            let renewed = if let Some(kind) = renews {
+                renewal::end_renewed(&mut tx, &agent, &grant.grant_id, kind, self.clock.now())
                     .await?
             } else {
                 Vec::new()

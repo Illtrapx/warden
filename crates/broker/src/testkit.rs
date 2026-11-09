@@ -6,6 +6,7 @@
 mod backend;
 mod broker;
 mod clock;
+pub mod github_app;
 mod notify;
 pub mod sshd;
 pub mod upstream;
@@ -13,6 +14,7 @@ pub mod upstream;
 pub use backend::{CaState, FakeBackend};
 pub use broker::{BaseUrls, LiveHold, TestBroker, TestResponse, request_signature};
 pub use clock::ManualClock;
+pub use github_app::github_app_key;
 pub use notify::{CapturingNotifier, FailingNotifier};
 pub use upstream::{HttpsUpstream, Received};
 

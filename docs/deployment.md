@@ -419,6 +419,13 @@ cached: an edit in 1Password takes effect on the next request.
    3. A key that also signs releases needs a replacement listed in `docs/release-signers`
       first. Keep the old public key listed, so that earlier tags still verify.
 
+7. **Optional: add a GitHub App**, for [GitHub tokens for agents](github-app.md). Create
+   the App as that page says, then put its id, its installation id and its private key in one
+   item tagged `warden:github-app` ([the fields](1password-items.md#github-app)). `warden-server
+   doctor` checks that it loads. A token is a credential the agent holds for an hour, and
+   revoking does not recall it, so read
+   [what that means](threat-model.md#github-tokens) first.
+
 ## 4. 1Password Connect, hardened
 
 Connect runs as two containers, `connect-api` (which warden calls) and

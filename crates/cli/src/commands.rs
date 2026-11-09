@@ -6,8 +6,8 @@ use warden_broker_proto::{Id, SecretName, TargetName};
 
 use crate::client::CallError;
 use crate::{
-    EXIT_CALL_STOPPED, EXIT_HTTP_FAIL, EXIT_NO_GRANT, EXIT_REVOKED, Exit, agent, client, guidance,
-    http, local_time, recover, setup_git, ssh, unix_now,
+    EXIT_CALL_STOPPED, EXIT_HTTP_FAIL, EXIT_NO_GRANT, EXIT_REVOKED, Exit, agent, client,
+    github_token, guidance, http, local_time, recover, setup_git, ssh, unix_now,
 };
 
 pub(crate) async fn run_setup_git(local: bool) -> Result<()> {
@@ -149,7 +149,8 @@ fn local_subject(record: &agent::GrantRecord) -> String {
 pub(crate) async fn revoke(grant: &Id) -> Result<()> {
     // Stop the local agent first: the grant is unusable here whatever the
     // broker answers.
-    let local = agent::discard_grant(grant)? | http::discard(grant)?;
+    let local =
+        agent::discard_grant(grant)? | http::discard(grant)? | github_token::discard(grant)?;
     let (_, client) = client()?;
     client.revoke(grant).await?;
     eprintln!(

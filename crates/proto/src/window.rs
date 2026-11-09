@@ -82,6 +82,32 @@ impl Window {
         }
     }
 
+    /// The windows a GitHub token grant may have, shortest first.
+    pub const GITHUB_TOKEN: [Self; 3] = [Self::D1, Self::D7, Self::D30];
+
+    /// The default window of a GitHub token grant.
+    pub const GITHUB_TOKEN_DEFAULT: Self = Self::D30;
+
+    /// Whether this is one of the windows of a GitHub token grant.
+    #[must_use]
+    pub const fn is_github_token(self) -> bool {
+        matches!(self, Self::D1 | Self::D7 | Self::D30)
+    }
+
+    /// Parse a GitHub token window: `1d`, `7d` or `30d`. Kept apart from
+    /// [`FromStr`] for the same reason as [`Window::commit_signing`].
+    ///
+    /// # Errors
+    /// If `s` is anything else.
+    pub fn github_token(s: &str) -> Result<Self, ParseError> {
+        match s {
+            "1d" => Ok(Self::D1),
+            "7d" => Ok(Self::D7),
+            "30d" => Ok(Self::D30),
+            _ => Err(ParseError::new("window", "must be one of 1d, 7d, 30d")),
+        }
+    }
+
     /// The window as written on the wire and on the command line, such as `15m`.
     #[must_use]
     pub const fn label(self) -> &'static str {

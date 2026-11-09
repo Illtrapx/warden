@@ -10,7 +10,7 @@ use zeroize::Zeroizing;
 
 use super::{CA_TAG, OnePasswordConnect, TARGET_TAG, Vault};
 use crate::policy::{
-    CommitSigningProbe, PolicyError, SecretBackend, SshMode, check_separate_from_ca,
+    CommitSigningProbe, GithubAppProbe, PolicyError, SecretBackend, SshMode, check_separate_from_ca,
 };
 
 /// What Connect says about the configured token and vault.
@@ -135,6 +135,11 @@ impl OnePasswordConnect {
             Err(e) => Err(e),
         };
         CommitSigningProbe::of(read)
+    }
+
+    /// Load the GitHub App and drop it.
+    pub async fn probe_github_app(&self) -> GithubAppProbe {
+        GithubAppProbe::of(self.github_app().await)
     }
 
     /// How many target items in the vault are in certificate mode. A title

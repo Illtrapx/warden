@@ -5,10 +5,7 @@
 //! the same transaction, so that revoking the grant on the owner's screen really
 //! does stop that agent's signatures.
 
-use std::collections::HashMap;
-use std::sync::{Mutex, MutexGuard, PoisonError};
-
-use sqlx::{Row as _, Sqlite, Transaction};
+use sqlx::Row as _;
 use url::Url;
 use warden_broker_proto::{
     Access, AgentName, CommitSigningGrant, CreateRequest, Goal, GrantAccess, GrantView, Id, Window,
@@ -19,9 +16,6 @@ use super::{Destination, RequestError, Requests, Scope, approval_token, begin, p
 use crate::audit::AuditEvent;
 use crate::notify::Doorbell;
 use crate::policy::{CommitSigningKey, CommitSigningPolicy, PolicyError, check_separate_from_ca};
-
-/// Recorded as `by` for a grant ended by approving its replacement.
-const RENEWED: &str = "renewed";
 
 /// The owner hears at most this long before a grant ends, in seconds, and sooner
 /// only for a grant so short that a quarter of it is less.
@@ -34,16 +28,6 @@ const NOTICE_RETRY_SECS: i64 = 3600;
 /// rebases need, and small enough that a looping agent cannot fill the audit log's
 /// disk in the life of a grant.
 pub const SIGNATURES_PER_DAY: u32 = 5000;
-
-/// Refusals recorded one by one per agent per minute; the rest are counted.
-const REFUSALS_PER_MINUTE: u32 = 30;
-
-/// An agent's active commit signing grants (`?1`, at `?2`), longest lasting first.
-const ACTIVE_FOR_AGENT: &str = "\
-    SELECT id, not_after, view FROM grants \
-    WHERE agent = ?1 AND revoked_at IS NULL AND not_after > ?2 \
-    AND json_extract(view, '$.access.kind') = 'commit_signing' \
-    ORDER BY not_after DESC, id";
 
 /// Commit signing grants ending soon at `?1`, whose owner was not told yet and was
 /// not tried since `?2`.
@@ -64,102 +48,12 @@ pub struct ActiveCommitSigning {
     pub grant: CommitSigningGrant,
 }
 
-/// One agent's refusals in the current minute.
-#[derive(Debug, Default)]
-struct RefusalMinute {
-    started_at: i64,
-    written: u32,
-    held: u64,
-}
-
-/// The refusals to sign of every agent. Enrolled agents are the only callers that
-/// get this far, so this holds an entry per enrolled agent at most. In memory: a
-/// restart can at worst lose the count of a minute.
-#[derive(Debug, Default)]
-pub(super) struct SigningRefusals {
-    agents: Mutex<HashMap<AgentName, RefusalMinute>>,
-}
-
-impl SigningRefusals {
-    fn lock(&self) -> MutexGuard<'_, HashMap<AgentName, RefusalMinute>> {
-        // Every update is a few steps that cannot panic, and at worst this
-        // miscounts: the refusal itself has already been decided.
-        self.agents.lock().unwrap_or_else(PoisonError::into_inner)
-    }
-
-    /// Count a refusal of `agent` at `now`. Whether to record it in full; if not,
-    /// it is held for a [`AuditEvent::CommitSigningRefusalsHeld`] entry.
-    fn note(&self, agent: &AgentName, now: i64) -> bool {
-        let mut agents = self.lock();
-        let minute = agents.entry(agent.clone()).or_default();
-        // A clock set back starts a new minute too.
-        if now < minute.started_at || now - minute.started_at >= 60 {
-            minute.started_at = now;
-            minute.written = 0;
-        }
-        if minute.written < REFUSALS_PER_MINUTE {
-            minute.written += 1;
-            true
-        } else {
-            minute.held = minute.held.saturating_add(1);
-            false
-        }
-    }
-
-    /// Take every count held back.
-    fn take_held(&self) -> Vec<(AgentName, u64)> {
-        self.lock()
-            .iter_mut()
-            .filter(|(_, minute)| minute.held > 0)
-            .map(|(agent, minute)| (agent.clone(), std::mem::take(&mut minute.held)))
-            .collect()
-    }
-
-    /// Put back `count`, which could not be written.
-    fn restore(&self, agent: &AgentName, count: u64) {
-        let mut agents = self.lock();
-        let minute = agents.entry(agent.clone()).or_default();
-        minute.held = minute.held.saturating_add(count);
-    }
-}
-
 /// Whether a commit signing grant may have `window`, under the server's `max`.
 pub(super) fn check_window(window: Window, max: Window) -> Result<(), String> {
     if !window.is_commit_signing() {
         return Err("a commit signing grant lasts 1d, 7d, 30d or 90d".to_owned());
     }
     super::check_window(window, max, "commit signing")
-}
-
-/// End the other active commit signing grants of `agent` at `now`, in `tx`, which
-/// also stores `kept`, the grant replacing them. Returns their requests.
-pub(super) async fn end_renewed(
-    tx: &mut Transaction<'static, Sqlite>,
-    agent: &AgentName,
-    kept: &Id,
-    now: i64,
-) -> Result<Vec<Id>, RequestError> {
-    let requests = sqlx::query(
-        "UPDATE grants SET revoked_at = ?1 \
-         WHERE agent = ?2 AND id != ?3 AND revoked_at IS NULL AND not_after > ?1 \
-         AND json_extract(view, '$.access.kind') = 'commit_signing' \
-         RETURNING request_id",
-    )
-    .bind(now)
-    .bind(agent.as_str())
-    .bind(kept.as_str())
-    .fetch_all(&mut **tx)
-    .await?
-    .iter()
-    .map(|row| parse(row, "request_id"))
-    .collect::<Result<Vec<Id>, _>>()?;
-    for request in &requests {
-        sqlx::query("UPDATE requests SET status = 'revoked' WHERE id = ? AND status = 'approved'")
-            .bind(request.as_str())
-            .execute(&mut **tx)
-            .await?;
-    }
-    Ok(requests)
 }
 
 impl Requests {
@@ -321,12 +215,12 @@ impl Requests {
         &self,
         agent: &AgentName,
     ) -> Result<Option<ActiveCommitSigning>, RequestError> {
-        let row = sqlx::query(ACTIVE_FOR_AGENT)
-            .bind(agent.as_str())
-            .bind(self.clock.now())
-            .fetch_optional(&self.pool)
-            .await?;
-        let Some(row) = row else {
+        let Some(row) = self
+            .active_rows(agent, "commit_signing")
+            .await?
+            .into_iter()
+            .next()
+        else {
             return Ok(None);
         };
         let view: String = row.try_get("view")?;
@@ -340,27 +234,6 @@ impl Requests {
             grant_id: parse(&row, "id")?,
             grant,
         }))
-    }
-
-    /// The entries for ending the grants a new commit signing grant of `agent`
-    /// replaces. Written with the approval, before anything changes.
-    pub(super) async fn renewal_events(
-        &self,
-        agent: &AgentName,
-    ) -> Result<Vec<AuditEvent>, RequestError> {
-        sqlx::query(ACTIVE_FOR_AGENT)
-            .bind(agent.as_str())
-            .bind(self.clock.now())
-            .fetch_all(&self.pool)
-            .await?
-            .iter()
-            .map(|row| {
-                Ok(AuditEvent::GrantRevoked {
-                    grant_id: parse(row, "id")?,
-                    by: RENEWED.to_owned(),
-                })
-            })
-            .collect()
     }
 
     /// Start renewing commit signing grant `grant_id`, for the owner: a request of its
@@ -445,32 +318,30 @@ impl Requests {
         reason: String,
         payload_sha256: Option<String>,
     ) {
-        if !self.signing_refusals.note(agent, self.clock.now()) {
-            return;
-        }
         let event = AuditEvent::CommitSigningRefused {
             agent: agent.clone(),
             grant_id,
             reason,
             payload_sha256,
         };
-        if let Err(e) = self.audit.append(event).await {
-            tracing::error!(agent = %agent, error = %e, "could not audit a refusal to sign");
-        }
+        self.signing_refusals
+            .record(
+                &self.audit,
+                agent,
+                self.clock.now(),
+                event,
+                "a refusal to sign",
+            )
+            .await;
     }
 
     /// Write the refusals to sign held back since the last time.
     pub(super) async fn flush_signing_refusals(&self) {
-        for (agent, count) in self.signing_refusals.take_held() {
-            let event = AuditEvent::CommitSigningRefusalsHeld {
-                agent: agent.clone(),
-                count,
-            };
-            if let Err(e) = self.audit.append(event).await {
-                tracing::error!(agent = %agent, error = %e, "could not audit refusals to sign");
-                self.signing_refusals.restore(&agent, count);
-            }
-        }
+        self.signing_refusals
+            .flush(&self.audit, "refusals to sign", |agent, count| {
+                AuditEvent::CommitSigningRefusalsHeld { agent, count }
+            })
+            .await;
     }
 
     /// Tell the owner about every commit signing grant about to end. A grant is
@@ -579,48 +450,7 @@ fn time_left(secs: i64) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{REFUSALS_PER_MINUTE, SigningRefusals, time_left};
-    use warden_broker_proto::AgentName;
-
-    fn agent(name: &str) -> AgentName {
-        name.parse().unwrap()
-    }
-
-    #[test]
-    fn refusals_beyond_the_limit_are_counted_not_written() {
-        let refusals = SigningRefusals::default();
-        let bot = agent("bot");
-        assert!(refusals.note(&bot, 1000));
-        for _ in 1..REFUSALS_PER_MINUTE {
-            assert!(refusals.note(&bot, 1000));
-        }
-        assert!(!refusals.note(&bot, 1059));
-        assert!(!refusals.note(&bot, 1059));
-        assert_eq!(refusals.take_held(), [(bot.clone(), 2)]);
-        assert_eq!(refusals.take_held(), []);
-        // Another agent has its own allowance, and the next minute starts afresh.
-        assert!(refusals.note(&agent("other"), 1059));
-        assert!(refusals.note(&bot, 1060));
-    }
-
-    #[test]
-    fn a_count_that_could_not_be_written_is_kept() {
-        let refusals = SigningRefusals::default();
-        let bot = agent("bot");
-        refusals.restore(&bot, 5);
-        assert_eq!(refusals.take_held(), [(bot, 5)]);
-    }
-
-    #[test]
-    fn a_clock_set_back_starts_a_new_minute() {
-        let refusals = SigningRefusals::default();
-        let bot = agent("bot");
-        for _ in 0..REFUSALS_PER_MINUTE {
-            assert!(refusals.note(&bot, 1000));
-        }
-        assert!(!refusals.note(&bot, 1000));
-        assert!(refusals.note(&bot, 900));
-    }
+    use super::time_left;
 
     #[test]
     fn time_left_reads_as_people_say_it() {

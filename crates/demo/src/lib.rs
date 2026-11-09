@@ -34,6 +34,7 @@ use url::Url;
 use warden_broker::approval::passkeys::Passkeys;
 use warden_broker::audit::{self, AuditLog};
 use warden_broker::config::Config;
+use warden_broker::github_app::GithubApi;
 use warden_broker::notify::Doorbell;
 use warden_broker::requests::{self, Clock as _, Requests, SystemClock};
 use warden_broker::{AppState, agents, audience, build_routers, store};
@@ -422,6 +423,7 @@ impl Prepared {
             requests: requests.clone(),
             passkeys,
             audience,
+            github: GithubApi::public(),
         };
         let (api, approval) = build_routers(state);
 

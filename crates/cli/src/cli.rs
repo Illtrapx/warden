@@ -104,6 +104,11 @@ pub(crate) enum Cmd {
         #[command(subcommand)]
         what: SetupWhat,
     },
+    /// Use GitHub through warden.
+    Github {
+        #[command(subcommand)]
+        what: GithubCmd,
+    },
     /// Show local grants, and the broker's view of this agent's grants and
     /// pending requests.
     Status,
@@ -112,6 +117,15 @@ pub(crate) enum Cmd {
         /// Grant identifier.
         grant: Id,
     },
+}
+
+#[derive(Debug, Subcommand)]
+pub(crate) enum GithubCmd {
+    /// Print a GitHub token on stdout, and nothing else: the cached one while it
+    /// has 5 minutes left, otherwise a new one from the broker. Without an active
+    /// grant, it asks the owner for one (30 days) and waits; it exits 5 if the
+    /// owner does not approve. The `gh` wrapper of `warden setup github` runs it.
+    Token,
 }
 
 #[derive(Debug, Subcommand)]
@@ -124,6 +138,11 @@ pub(crate) enum SetupWhat {
         #[arg(long)]
         local: bool,
     },
+    /// Have git and gh use GitHub tokens from warden: this program becomes git's
+    /// credential helper for GitHub over HTTPS, the only one git consults for it,
+    /// and ~/.local/bin/gh a wrapper that runs the real gh with a token. Changes
+    /// git's global configuration; never replaces a ~/.local/bin/gh it did not write.
+    Github,
 }
 
 #[derive(Debug, Subcommand)]
@@ -171,6 +190,20 @@ pub(crate) enum RequestKind {
     Signing {
         /// Window length: 1d, 7d, 30d or 90d, up to what the server allows.
         #[arg(long = "for", default_value = "30d", value_parser = Window::commit_signing)]
+        window: Window,
+        /// What the access is for, shown to the owner.
+        #[arg(long)]
+        goal: Goal,
+        #[command(flatten)]
+        context: RequestContext,
+    },
+    /// GitHub tokens for git and gh (contents, pull requests and issues of the
+    /// repositories the owner's GitHub App is installed on), minted by the broker for
+    /// an hour at a time, for much longer than other access. git and gh also ask for
+    /// this by themselves, once set up with `warden setup github`.
+    Github {
+        /// Window length: 1d, 7d or 30d, up to what the server allows.
+        #[arg(long = "for", default_value = "30d", value_parser = Window::github_token)]
         window: Window,
         /// What the access is for, shown to the owner.
         #[arg(long)]

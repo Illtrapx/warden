@@ -168,6 +168,21 @@ impl TestBroker {
         }
     }
 
+    /// A request for a GitHub App installation token.
+    ///
+    /// # Panics
+    /// If `goal` is not a valid goal.
+    #[must_use]
+    pub fn github_token_request(goal: &str, window: Window) -> CreateRequest {
+        CreateRequest {
+            goal: Goal::try_from(goal.to_owned()).expect("valid goal"),
+            access: Access::GithubToken {},
+            window,
+            session: None,
+            link: None,
+        }
+    }
+
     /// A request to use API secret `secret`.
     ///
     /// # Panics

@@ -30,6 +30,7 @@ use crate::requests::{BACKEND_UNAVAILABLE, RequestError};
 use crate::signed;
 
 mod commit_signing;
+mod github_token;
 
 /// Largest accepted request body, in bytes.
 const BODY_LIMIT: usize = 16 * 1024;
@@ -83,6 +84,10 @@ pub fn router(state: AppState) -> Router {
         .route(
             "/v1/commit-signing/sign",
             agent(post(commit_signing::sign), PROXY_BODY_LIMIT),
+        )
+        .route(
+            "/v1/github-token",
+            agent(post(github_token::mint), BODY_LIMIT),
         )
         .route(
             "/v1/grants/{id}/revoke",
@@ -249,6 +254,7 @@ async fn info(State(state): State<AppState>) -> Json<InfoResponse> {
     Json(InfoResponse {
         protocols: vec![signing::PROTOCOL.to_owned()],
         audience: state.audience,
+        github_token_max_window: Some(state.requests.github_token_max()),
     })
 }
 
@@ -407,9 +413,10 @@ async fn api_grant_status(
     } else {
         match view.access {
             GrantAccess::Api(grant) => Ok(grant),
-            GrantAccess::Ssh(_) | GrantAccess::Relay(_) | GrantAccess::CommitSigning(_) => {
-                Err(Unusable::NotApi)
-            }
+            GrantAccess::Ssh(_)
+            | GrantAccess::Relay(_)
+            | GrantAccess::CommitSigning(_)
+            | GrantAccess::GithubToken(_) => Err(Unusable::NotApi),
         }
     })
 }

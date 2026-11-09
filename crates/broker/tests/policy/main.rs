@@ -13,6 +13,7 @@ use wiremock::{Mock, MockServer, ResponseTemplate};
 mod api;
 mod ca;
 mod connect;
+mod github_app;
 mod relay;
 mod targets;
 

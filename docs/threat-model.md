@@ -44,6 +44,9 @@ warden does **not** protect against:
 - **What an agent commits while it may sign.** A signature means warden signed the
   commit for that agent, not that anyone reviewed the change. See
   [Commit signing](#commit-signing).
+- **A GitHub token an agent already holds.** A token lasts an hour, covers every
+  repository the GitHub App is installed on, and is a bearer secret the agent has:
+  revoking its grant stops new tokens, not that one. See [GitHub tokens](#github-tokens).
 - **Instant revocation everywhere.** An issued certificate stays valid on
   its target until it expires, and an open login to a certificate target continues
   even after that (issue
@@ -64,7 +67,7 @@ from, not that it is safe for real use.
 | Owner (phone, workstation) | Root of trust. Holds the passkey. Edits the 1Password vault. |
 | The warden host (its root, its container runtime) | Root of trust. Can read everything warden holds and act as warden. |
 | Agent (for example an AI coding agent on the owner's workstation) | Semi-trusted: well-intentioned but may be prompt-injected. Bounded by its stated goal, the approved window, and the targets and users the vault allows. It can request access and use what was granted, never approve it. |
-| warden server | Trusted. Holds a read-only 1Password Connect token in memory, and for short times what it reads with it: the SSH CA private key, from the read at an approval until the certificate is signed, the commit signing key while it signs, API secrets during a call, and relay login credentials (see below). Compromise of the server is compromise of everything it brokers, so it is hardened accordingly. |
+| warden server | Trusted. Holds a read-only 1Password Connect token in memory, and for short times what it reads with it: the SSH CA private key, from the read at an approval until the certificate is signed, the commit signing key while it signs, the GitHub App's private key while it mints a token, API secrets during a call, and relay login credentials (see below). Compromise of the server is compromise of everything it brokers, so it is hardened accordingly. |
 | 1Password Connect | Trusted secret backend. Reachable only from warden, on its own network, and unable to reach warden's listeners. |
 | Notifiers (Home Assistant Companion, ntfy, push providers) | Untrusted doorbells. They receive the goal text, the session label the agent stated, agent, target and a link to the approval page, and nothing else. They cannot approve anything. Which channels are used is fixed at startup from a compile-time set (`WARDEN_NOTIFY`); agents cannot influence it. |
 | Tailscale | Transport and network-level identity. The tailnet policy is the outer access control. |
@@ -489,6 +492,8 @@ These were recorded during implementation and are accepted for this release.
   - **A commit signing grant has nothing to collect.** The broker signs under it for
     the agent's login, so it works whether or not the run that asked is alive, and
     `warden request collect` says so and writes nothing.
+  - **A GitHub token grant has nothing to collect** either: the broker mints under it for
+    the agent's login, and the CLI gets tokens as it needs them.
   - **An SSH or relay grant of a dead `warden request ssh` is unusable.** The private key
     was only in that run's memory, so the certificate, which the agent can still read,
     gives no login, and the relay admits no one. Writing the key to disk so that a later
@@ -888,6 +893,101 @@ whose digest is not there, but which verifies with this key, was signed some oth
 under an entry the log no longer has: someone with control of the warden host can rewrite the
 log. The log does not show whether a commit was stored or pushed, where it went, or whether its
 author line is true.
+
+## GitHub tokens
+
+An agent that pushes to GitHub needs a credential on its machine. The broker can hold the
+private key of a GitHub App instead, and mint the agent an installation token under a grant.
+This is **the one access where the agent holds a usable credential**: for an API, an SSH
+certificate or a relay target, what the agent has is useless without warden or gone within
+hours. A GitHub token is a bearer secret that works from anywhere, so the grant is not what
+bounds the damage. The owner's setup on GitHub is. [GitHub tokens for agents](github-app.md)
+describes that setup.
+
+What an attacker gets, and what stops it:
+
+- **A token covers every repository the App's installation covers**, not the one the agent's
+  goal named. warden asks GitHub for no repository restriction, and could not know which
+  repository a goal means. The owner chooses repositories by installing the App on them and
+  sets what each allows with GitHub's own rules: see
+  [the three levels](github-app.md#the-three-levels-per-repository). The approval page says
+  this in its badge.
+- **The permissions are fixed**: `contents`, `pull_requests` and `issues` write, `metadata`
+  read. Neither the agent nor the owner chooses them at approval, and the broker sends
+  exactly these to GitHub whatever the App is allowed. No `workflows`, so GitHub refuses a push
+  that changes a workflow file, and no `administration`.
+- **Within a grant, the agent gets tokens with no prompt**, up to 60 an hour (UTC): far more
+  than the CLI, which keeps each token for its hour, needs, and few enough that a looping
+  agent cannot use up the App's rate limit at GitHub, which every agent shares, or fill the
+  audit log. A refused mint does not reach GitHub and is audited as `github_token_refused`.
+  A prompt-injected agent gets tokens too, and what a token can do includes pushing branches,
+  opening pull requests and editing issues. Pushes to a protected default branch are stopped
+  by the repository's rules on GitHub, and not by warden. A repository whose content runs as
+  the owner must not allow more than pull requests, and a pull request there is code to read.
+- **Revoking cannot recall a token already minted.** It stops the next mint at once,
+  including one finishing when the revocation lands: that token is not given out. A token
+  already out lives until GitHub ends it, at most an hour. The CLI also keeps the token in
+  `github-token.json` in its state directory (mode 0600, for that agent and broker), and
+  serves it for the rest of its hour after the owner revokes in the approval UI, as nothing
+  tells the CLI. `warden revoke` on the agent's machine drops it. An owner who must end a
+  token at once suspends the App or removes its installation on GitHub, which ends the tokens
+  of every agent.
+- **A copied agent key mints tokens** for as long as the grant lasts, like any grant of a
+  copied key ([risk 9](security-assessment.md#ranked-risks)). Calls are audited under the
+  agent's name.
+- **Whoever holds the App's private key mints tokens with no grant and no entry in the audit
+  log**, because they talk to GitHub, not to warden. That is the broker host, as with the
+  other keys it holds, and whoever can read the vault item. A leaked key is revoked on GitHub,
+  not in warden: delete it in the App's settings.
+- **A compromised warden host can mint any token** the App's installation allows, for as
+  long as it holds the key.
+
+What holds:
+
+- **The private key never leaves the broker.** The agent gets a token, the key does not
+  appear in any response, log, error or audit entry, and neither does the token or the JWT
+  that asked for it. They are kept in types that wipe them and print nothing, with the same
+  residual copies in HTTP client buffers as the other secrets
+  ([accepted residual risks](#accepted-residual-risks)). The key is read for each approval
+  page and each mint, so it is in memory more often than the CA key. The owner causes the
+  first; an agent causes the others only with an active grant. An agent with no grant cannot
+  make the broker read it.
+- **The key signs only the JWT GitHub asks for, through `aws-lc-rs`.** The `rsa` crate in the
+  dependency tree, behind the `RUSTSEC-2023-0071` exemption in `deny.toml`, is never given a
+  private key: warden uses it for public keys only, to verify the pinned host keys of relay
+  targets. The key must be unencrypted RSA of at least 2048 bits, PKCS#1 or PKCS#8.
+- **One agent's grant does not help another.** Minting looks up the calling agent's own
+  grant, for each token.
+- **It fails closed.** A database that cannot be read, an App that cannot be read, a grant
+  that ended while GitHub was answering, or an entry that cannot be written all mean no token.
+  The token leaves the broker only after its entry is written, and only if the same grant is
+  still active afterwards. A grant is bound to the App and installation the owner approved:
+  if either changed, the answer is a 409 and the agent asks again. Replacing only the key
+  keeps grants.
+- **GitHub's answer is not passed on.** The agent gets fixed texts for a refusal or an
+  outage, so nothing GitHub said, including an echo of the JWT or token, reaches it. The
+  client trusts the system roots, refuses redirects and reads at most 64 KiB.
+- **Every mint and every refusal is recorded**. A `github_token_minted` entry can be followed by a `github_token_refused` entry for the same call, when the grant ended or was replaced during the mint: the token was then not given out. `github_token_minted` holds the grant, agent,
+  installation, permissions and expiry, and `github_token_refused` the reason. Beyond 30
+  refusals a minute per agent they are counted in `github_token_refusals_held`, through the
+  limiter commit signing uses, so refused calls cannot fill the log. A body over the route's
+  16 KiB limit is refused before the caller is known, and is not recorded, as on every route.
+- **An agent cannot approve it, and nothing renews by itself.** A grant takes the passkey,
+  and one agent has one grant at a time: approving a new one ends the one before it. Unlike
+  commit signing, there is **no notification before a GitHub token grant ends and no Renew
+  button**. The agent's next call after it ends asks the owner again, so the request comes
+  while the agent is working, and the owner approves it as a new grant.
+- **The CLI asks for a grant itself** when `git` or `gh` needs a token and there is none, so
+  a prompt-injected agent does not need a special command to ask. It is the same request as
+  any other: it needs the passkey, shows the goal the CLI wrote, and counts against the
+  request limits. A denial ends the call with a message not to retry or work around it.
+- **The credential helper answers for `https://github.com` only.** It ignores any other host
+  or scheme and every operation but `get`, so other credentials are not touched. `warden
+  setup github` makes git ask warden alone for that host. An agent on its own
+  machine can change its git configuration back, which warden cannot prevent.
+
+**If GitHub is unavailable**, minting fails with a 503 and the agent's `git` or `gh` call
+fails, saying so. Nothing falls back to another credential.
 
 ## The local secret backend
 

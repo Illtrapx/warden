@@ -3,7 +3,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::{CommitSigningGrant, Id, SecretName, TargetName, UnixUser};
+use crate::{CommitSigningGrant, GithubTokenGrant, Id, SecretName, TargetName, UnixUser};
 
 /// An approved grant.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -31,6 +31,9 @@ pub enum GrantAccess {
     /// Commit signing by the broker's key.
     #[serde(rename = "commit_signing")]
     CommitSigning(CommitSigningGrant),
+    /// GitHub App installation tokens minted by the broker.
+    #[serde(rename = "github_token")]
+    GithubToken(GithubTokenGrant),
 }
 
 /// SSH relay grant details: the agent connects to the broker's relay, which

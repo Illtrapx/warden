@@ -2,7 +2,7 @@
 
 use warden_broker_proto::doctor::Check;
 
-use crate::policy::{CaProbe, LocalProbe};
+use crate::policy::{CaProbe, GithubAppProbe, LocalProbe};
 
 const POLICY: &str = "local.policy";
 const ENTRIES: &str = "local.entries";
@@ -18,7 +18,7 @@ pub(super) fn checks(probe: LocalProbe, checks: &mut Vec<Check>) {
                 reason,
                 "Fix the policy file and its permissions: see docs/local-backend.md.",
             ));
-            for name in [ENTRIES, CA, "commit-signing"] {
+            for name in [ENTRIES, CA, "commit-signing", "github-app"] {
                 checks.push(Check::could_not_check(
                     name,
                     "Not checked: the policy file is not usable.",
@@ -56,6 +56,10 @@ pub(super) fn checks(probe: LocalProbe, checks: &mut Vec<Check>) {
             checks.push(super::commit_signing::check(
                 Some(commit_signing),
                 super::commit_signing::Backend::Local,
+            ));
+            checks.push(super::github_app::check(
+                Some(GithubAppProbe::NotConfigured),
+                super::github_app::Backend::Local,
             ));
         }
     }

@@ -8,7 +8,8 @@ use super::end_states::end_state;
 use super::format::{bytes, idle_label};
 use super::stated::stated_lines;
 use super::{
-    Chip, Nav, clock, commit_signing, empty_icon, fingerprint_forms, grant_access, layout,
+    Chip, Nav, clock, commit_signing, empty_icon, ends, fingerprint_forms, github_token,
+    grant_access, layout,
 };
 use crate::requests::{ActiveGrant, LinkHosts};
 
@@ -23,6 +24,8 @@ enum LiveKind {
     Api,
     /// Commit signing: each signature is one quick call, recorded in the log.
     CommitSigning,
+    /// GitHub token: each mint is one quick call, recorded in the log.
+    GithubToken,
 }
 
 impl LiveKind {
@@ -32,6 +35,7 @@ impl LiveKind {
             GrantAccess::Relay(_) => Self::Relay,
             GrantAccess::Api(_) => Self::Api,
             GrantAccess::CommitSigning(_) => Self::CommitSigning,
+            GrantAccess::GithubToken(_) => Self::GithubToken,
         }
     }
 
@@ -42,6 +46,7 @@ impl LiveKind {
             Self::Relay => "relay",
             Self::Api => "api",
             Self::CommitSigning => "commit-signing",
+            Self::GithubToken => "github-token",
         }
     }
 }
@@ -78,6 +83,8 @@ fn live_area(grant: &ActiveGrant, live: Option<&LiveGrant<'_>>) -> Markup {
                 p.detail { "Certificate logins are not visible to warden, so this does not show whether it was used." }
             } @else if kind == LiveKind::CommitSigning {
                 (commit_signing::live_note())
+            } @else if kind == LiveKind::GithubToken {
+                (github_token::live_note())
             } @else if summary.is_empty() {
                 p.detail { (if kind == LiveKind::Relay { "No sessions open" } else { "No calls in flight" }) }
             } @else {
@@ -160,8 +167,11 @@ pub fn grants(
                         (stated_lines(&grant.request, hosts))
                         div.meta {
                             span { "Fingerprint " (fingerprint_forms(&grant.fingerprint)) }
-                            @if matches!(grant.access, GrantAccess::CommitSigning(_)) {
-                                (commit_signing::ends(grant.not_after, now))
+                            @if matches!(
+                                grant.access,
+                                GrantAccess::CommitSigning(_) | GrantAccess::GithubToken(_)
+                            ) {
+                                (ends(grant.not_after, now))
                             } @else {
                                 span {
                                     "Ends " (clock(grant.not_after))

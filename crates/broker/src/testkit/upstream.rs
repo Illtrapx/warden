@@ -3,6 +3,7 @@
 //! stream too much or too slowly, hang until the caller gives up, or claim a
 //! compressed body.
 
+use std::collections::VecDeque;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -52,6 +53,88 @@ pub struct Received {
     pub body: Vec<u8>,
 }
 
+/// A response a test scripts for the GitHub token route.
+#[derive(Debug, Clone)]
+pub struct Scripted {
+    /// Status code.
+    pub status: u16,
+    /// Response headers.
+    pub headers: Vec<(String, String)>,
+    /// Body.
+    pub body: Vec<u8>,
+    /// When set, the response is held back until the gate opens.
+    pub gate: Option<Gate>,
+    /// Whether the body goes in 1 KiB chunks, with no `Content-Length`.
+    pub chunked: bool,
+}
+
+impl Scripted {
+    /// `status` with no headers and an empty body.
+    #[must_use]
+    pub const fn status(status: u16) -> Self {
+        Self {
+            status,
+            headers: Vec::new(),
+            body: Vec::new(),
+            gate: None,
+            chunked: false,
+        }
+    }
+
+    /// `status` with `body`.
+    #[must_use]
+    pub fn with_body(status: u16, body: impl Into<Vec<u8>>) -> Self {
+        Self {
+            body: body.into(),
+            ..Self::status(status)
+        }
+    }
+
+    /// Add a response header.
+    #[must_use]
+    pub fn header(mut self, name: &str, value: &str) -> Self {
+        self.headers.push((name.to_owned(), value.to_owned()));
+        self
+    }
+
+    /// Send the body in 1 KiB chunks, with no `Content-Length`.
+    #[must_use]
+    pub const fn chunked(mut self) -> Self {
+        self.chunked = true;
+        self
+    }
+
+    /// Hold the response until `gate` opens.
+    #[must_use]
+    pub fn held_by(mut self, gate: &Gate) -> Self {
+        self.gate = Some(gate.clone());
+        self
+    }
+}
+
+/// A condition a scripted response waits on: closed until [`Gate::open`].
+#[derive(Debug, Clone)]
+pub struct Gate(Arc<watch::Sender<bool>>);
+
+impl Gate {
+    /// A closed gate.
+    #[must_use]
+    pub fn new() -> Self {
+        Self(Arc::new(watch::Sender::new(false)))
+    }
+
+    /// Let every response held by this gate go.
+    pub fn open(&self) {
+        self.0.send_replace(true);
+    }
+}
+
+impl Default for Gate {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 /// A running HTTPS server on `https://localhost:<port>`, trusted only
 /// through [`HttpsUpstream::ca_pem`]. Stopped on drop.
 ///
@@ -71,6 +154,9 @@ pub struct Received {
 /// - `/hang`: no answer at all, until the caller closes the connection;
 /// - `/drip`: `200`, the `Authorization` value in clear, then a chunk every few
 ///   milliseconds without end, until the caller closes the connection;
+/// - `POST /app/installations/<id>/access_tokens`: the next response queued with
+///   [`HttpsUpstream::script_github_token`] (`500` when none is), held until its
+///   [`Gate`] opens when it has one;
 /// - `/gzip`: a body labelled `Content-Encoding: gzip`;
 /// - `/status/<code>`: that status, body `status <code>`;
 /// - `/binary`: [`BINARY_BODY`], which is not UTF-8;
@@ -81,6 +167,8 @@ pub struct HttpsUpstream {
     received: Arc<Mutex<Vec<Received>>>,
     abandoned: Arc<watch::Sender<u64>>,
     released: Arc<watch::Sender<bool>>,
+    scripts: Arc<Mutex<VecDeque<Scripted>>>,
+    token_calls: Arc<watch::Sender<u64>>,
     server: AbortHandle,
 }
 
@@ -100,6 +188,10 @@ struct Shared {
     abandoned: Arc<watch::Sender<u64>>,
     /// Whether `/held` may answer.
     released: Arc<watch::Sender<bool>>,
+    /// Responses for the GitHub token route, oldest first.
+    scripts: Arc<Mutex<VecDeque<Scripted>>>,
+    /// How many calls the GitHub token route has received.
+    token_calls: Arc<watch::Sender<u64>>,
 }
 
 /// Counts one abandoned call when dropped, which is what happens to a handler
@@ -133,10 +225,14 @@ impl HttpsUpstream {
         let received: Log = Arc::default();
         let abandoned = Arc::new(watch::Sender::new(0));
         let released = Arc::new(watch::Sender::new(false));
+        let scripts: Arc<Mutex<VecDeque<Scripted>>> = Arc::default();
+        let token_calls = Arc::new(watch::Sender::new(0));
         let router = Router::new().fallback(handle).with_state(Shared {
             log: received.clone(),
             abandoned: abandoned.clone(),
             released: released.clone(),
+            scripts: scripts.clone(),
+            token_calls: token_calls.clone(),
         });
         let server = tokio::spawn(serve(listener, acceptor, router)).abort_handle();
         Self {
@@ -145,6 +241,8 @@ impl HttpsUpstream {
             received,
             abandoned,
             released,
+            scripts,
+            token_calls,
             server,
         }
     }
@@ -212,6 +310,30 @@ impl HttpsUpstream {
     /// Let calls to `/held` answer.
     pub fn release_held(&self) {
         self.released.send_replace(true);
+    }
+
+    /// Queue the response for the next call to the GitHub token route.
+    ///
+    /// # Panics
+    /// If the script lock is poisoned.
+    pub fn script_github_token(&self, response: Scripted) {
+        self.scripts
+            .lock()
+            .expect("upstream script poisoned")
+            .push_back(response);
+    }
+
+    /// Wait until the GitHub token route has received `count` calls, answered or
+    /// still held. The caller bounds the wait.
+    ///
+    /// # Panics
+    /// If the upstream is gone, which cannot happen while `self` lives.
+    pub async fn wait_for_github_token_calls(&self, count: u64) {
+        self.token_calls
+            .subscribe()
+            .wait_for(|calls| *calls >= count)
+            .await
+            .expect("the upstream holds the sender");
     }
 
     /// How many calls to `/hang` or `/drip` have lost their caller so far.
@@ -286,6 +408,9 @@ async fn handle(State(shared): State<Shared>, req: Request) -> Response {
             headers: parts.headers.clone(),
             body: body.clone(),
         });
+    if parts.method == http::Method::POST && is_github_token_route(parts.uri.path()) {
+        return github_token(&shared).await;
+    }
     match parts.uri.path() {
         "/echo" => echo(&parts.headers, &body),
         "/name-echo" => name_echo(&parts.headers),
@@ -335,6 +460,43 @@ async fn handle(State(shared): State<Shared>, req: Request) -> Response {
             Body::from("hello from upstream"),
         ),
     }
+}
+
+fn is_github_token_route(path: &str) -> bool {
+    path.strip_prefix("/app/installations/")
+        .and_then(|rest| rest.strip_suffix("/access_tokens"))
+        .is_some_and(|id| !id.is_empty() && id.bytes().all(|b| b.is_ascii_digit()))
+}
+
+/// The next scripted response, after its gate opens; `500` when none is queued.
+async fn github_token(shared: &Shared) -> Response {
+    shared.token_calls.send_modify(|calls| *calls += 1);
+    let scripted = shared
+        .scripts
+        .lock()
+        .expect("upstream script poisoned")
+        .pop_front();
+    let Some(scripted) = scripted else {
+        return respond(StatusCode::INTERNAL_SERVER_ERROR, &[], Body::empty());
+    };
+    if let Some(Gate(gate)) = &scripted.gate {
+        // The sender lives in the gate this response holds, so this cannot fail.
+        let _ = gate.subscribe().wait_for(|open| *open).await;
+    }
+    let body = if scripted.chunked {
+        in_chunks(scripted.body)
+    } else {
+        Body::from(scripted.body)
+    };
+    let mut response = Response::new(body);
+    *response.status_mut() = StatusCode::from_u16(scripted.status).expect("scripted status");
+    for (name, value) in &scripted.headers {
+        response.headers_mut().append(
+            HeaderName::from_bytes(name.as_bytes()).expect("scripted header name"),
+            HeaderValue::from_str(value).expect("scripted header value"),
+        );
+    }
+    response
 }
 
 fn respond(status: StatusCode, headers: &[(&'static str, String)], body: Body) -> Response {
@@ -455,6 +617,19 @@ fn redirect(headers: &HeaderMap) -> Response {
 }
 
 /// [`HUGE_BYTES`] in 64 KiB chunks, with no `Content-Length`.
+/// `body` in 1 KiB chunks, so that its length is not known up front.
+fn in_chunks(body: Vec<u8>) -> Body {
+    let (mut tx, stream) = Channel::<Bytes>::new(1);
+    tokio::spawn(async move {
+        for chunk in body.chunks(1024) {
+            if tx.send_data(Bytes::copy_from_slice(chunk)).await.is_err() {
+                return;
+            }
+        }
+    });
+    Body::new(stream)
+}
+
 fn huge_chunked() -> Body {
     let (mut tx, body) = Channel::<Bytes>::new(1);
     tokio::spawn(async move {

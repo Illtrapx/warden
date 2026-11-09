@@ -26,7 +26,9 @@ use warden_broker_proto::{
 use crate::agents::AgentError;
 use crate::audit::{AuditError, AuditLog};
 use crate::notify::Notifier;
-use crate::policy::{ApiSecretPolicy, CommitSigningPolicy, PolicyError, SecretBackend, SshTarget};
+use crate::policy::{
+    ApiSecretPolicy, CommitSigningPolicy, GithubTokenPolicy, PolicyError, SecretBackend, SshTarget,
+};
 use crate::proxy::{CallSlots, ProxyLimits};
 use crate::relay::{LiveSessions, RelayEndpoint};
 
@@ -38,17 +40,21 @@ pub(crate) use self::transition::{begin, note_if_not_applied, record};
 
 mod bus;
 mod commit_signing;
+mod github_token;
 mod limits;
 mod link_hosts;
 mod pending;
+mod refusal_throttle;
+mod renewal;
 
 pub use self::bus::StatusBus;
-use self::commit_signing::SigningRefusals;
 pub use self::commit_signing::{ActiveCommitSigning, SIGNATURES_PER_DAY};
+pub use self::github_token::{ActiveGithubToken, MINTS_PER_HOUR};
 use self::limits::Refusals;
 pub use self::limits::{LimitRefusal, RequestLimits};
 pub use self::link_hosts::LinkHosts;
 pub use self::pending::PendingEntry;
+use self::refusal_throttle::RefusalThrottle;
 
 mod create;
 mod decide;
@@ -209,6 +215,10 @@ impl From<PolicyError> for RequestError {
             PolicyError::CommitSigningKey(m) => {
                 Self::Unavailable(format!("commit signing key: {m}"))
             }
+            PolicyError::NoGithubApp => {
+                Self::Rejected(warden_broker_proto::github_token::NOT_CONFIGURED.to_owned())
+            }
+            PolicyError::GithubApp(m) => Self::Unavailable(format!("GitHub App: {m}")),
         }
     }
 }
@@ -223,6 +233,8 @@ pub enum Destination {
     Api(ApiSecretPolicy),
     /// Commit signing by the broker's key.
     CommitSigning(CommitSigningPolicy),
+    /// GitHub App installation tokens.
+    GithubToken(GithubTokenPolicy),
 }
 
 impl Destination {
@@ -236,6 +248,7 @@ impl Destination {
             Self::Ssh(target) => target.destination_digest(),
             Self::Api(policy) => policy.destination_digest(),
             Self::CommitSigning(policy) => policy.destination_digest(),
+            Self::GithubToken(policy) => policy.destination_digest(),
         }
     }
 
@@ -246,6 +259,7 @@ impl Destination {
             Self::Ssh(target) => target.max_window,
             Self::Api(policy) => policy.max_window,
             Self::CommitSigning(policy) => policy.max_window,
+            Self::GithubToken(policy) => policy.max_window,
         }
     }
 
@@ -259,6 +273,9 @@ impl Destination {
             Self::Api(policy) => format!("secret {}", policy.name),
             Self::CommitSigning(policy) => {
                 return commit_signing::check_window(window, policy.max_window);
+            }
+            Self::GithubToken(policy) => {
+                return github_token::check_window(window, policy.max_window);
             }
         };
         check_window(window, self.max_window(), &subject)
@@ -375,13 +392,19 @@ pub struct Requests {
     limits: RequestLimits,
     /// What has been recorded and told about refusals under `limits`.
     refusals: Arc<Refusals>,
-    /// Longest commit signing grant the server allows. The only grant allowed to
-    /// outlast 4 hours: see `docs/threat-model.md`.
+    /// Longest commit signing grant the server allows. With GitHub token grants, the
+    /// only grants allowed to outlast 4 hours: see `docs/threat-model.md`.
     commit_signing_max: Window,
     /// Signatures per commit signing grant per UTC day.
     commit_signing_per_day: u32,
+    /// Longest GitHub token grant the server allows.
+    github_token_max: Window,
+    /// GitHub tokens per agent per hour.
+    github_token_per_hour: u32,
     /// What has been recorded of refusals to sign.
-    signing_refusals: Arc<SigningRefusals>,
+    signing_refusals: Arc<RefusalThrottle>,
+    /// What has been recorded of refusals to mint GitHub tokens.
+    github_refusals: Arc<RefusalThrottle>,
     /// Hosts a request may link to.
     link_hosts: LinkHosts,
 }
@@ -427,7 +450,10 @@ impl Requests {
             refusals: Arc::default(),
             commit_signing_max: Window::COMMIT_SIGNING_DEFAULT,
             commit_signing_per_day: SIGNATURES_PER_DAY,
+            github_token_max: Window::GITHUB_TOKEN_DEFAULT,
+            github_token_per_hour: MINTS_PER_HOUR,
             signing_refusals: Arc::default(),
+            github_refusals: Arc::default(),
             link_hosts: LinkHosts::default(),
         }
     }

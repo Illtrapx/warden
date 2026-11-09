@@ -59,6 +59,7 @@ macro_rules! string_newtype {
 
 pub mod commit_signing;
 pub mod doctor;
+pub mod github_token;
 mod grant;
 mod names;
 mod session;
@@ -74,6 +75,7 @@ pub use self::names::{AgentName, Goal, SecretName, TargetName, UnixUser};
 pub use self::session::{SessionLabel, SessionLink};
 pub use self::window::Window;
 pub use commit_signing::CommitSigningGrant;
+pub use github_token::GithubTokenGrant;
 
 /// 16 bytes of OS randomness as 32 lowercase hex characters.
 ///
@@ -142,6 +144,9 @@ pub enum Access {
     /// Commit signing by the broker's key, in the agent's name.
     #[serde(rename = "commit_signing")]
     CommitSigning {},
+    /// A short-lived GitHub App installation token, minted by the broker.
+    #[serde(rename = "github_token")]
+    GithubToken {},
 }
 
 /// The methods that cannot modify anything on the server.
@@ -343,6 +348,11 @@ pub struct InfoResponse {
     pub protocols: Vec<String>,
     /// The broker's audience.
     pub audience: signing::Audience,
+    /// The longest GitHub token grant this broker allows
+    /// (`WARDEN_GITHUB_TOKEN_MAX_WINDOW`), so that a request made by git or `gh`
+    /// asks for no more. Absent from brokers older than GitHub tokens.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub github_token_max_window: Option<Window>,
 }
 
 /// Error body returned by the API.

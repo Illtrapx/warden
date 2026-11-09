@@ -24,11 +24,12 @@ use warden_broker_proto::doctor::{Check, Report};
 
 use crate::config::{ALLOW_PLAIN_HTTP, BackendSettings, Config, ConfigError, UrlTransport};
 use crate::notify::{ChannelSettings, Doorbell, NotifyError};
-use crate::policy::{CaProbe, CommitSigningProbe, LocalProbe, VaultProbe};
+use crate::policy::{CaProbe, CommitSigningProbe, GithubAppProbe, LocalProbe, VaultProbe};
 use crate::private_files;
 use crate::proxy::{Needles, redact};
 
 mod commit_signing;
+mod github_app;
 pub mod live;
 mod local;
 
@@ -94,6 +95,8 @@ pub trait Environment: Send + Sync {
     async fn ca(&self) -> CaProbe;
     /// Load the commit signing key and drop it.
     async fn commit_signing(&self) -> CommitSigningProbe;
+    /// Load the GitHub App and drop it.
+    async fn github_app(&self) -> GithubAppProbe;
     /// Read and validate everything the local backend would read.
     async fn local(&self) -> LocalProbe;
     /// Send `doorbell` through one channel, and only that one.
@@ -238,6 +241,14 @@ pub async fn examine(
                     None
                 },
                 commit_signing::Backend::OnePassword,
+            ));
+            checks.push(github_app::check(
+                if vault_found {
+                    Some(env.github_app().await)
+                } else {
+                    None
+                },
+                github_app::Backend::OnePassword,
             ));
         }
         BackendSettings::Local(_) => local::checks(env.local().await, &mut checks),

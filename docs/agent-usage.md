@@ -490,9 +490,21 @@ history and the audit log.
 warden request signing --goal "Sign build-agent's commits on the warden repo"
 ```
 
-This is the one grant that lasts long: 30 days by default, with `--for 1d`, `7d`, `30d` or
+This is one of two grants that last long: 30 days by default, with `--for 1d`, `7d`, `30d` or
 `90d` up to what the server allows, because a rebase can need many signatures and none of
 them should need a prompt. Ask once, not per commit. See [Signing commits](#signing-commits).
+
+### Requesting GitHub tokens
+
+```sh
+warden request github --goal "Push branches and open PRs for build-agent's fixes"
+```
+
+The other long grant: 30 days by default, with `--for 1d`, `7d` or `30d` up to what the
+server allows. Ask once, not per push. You do not have to ask ahead: with none, the first
+`git` or `gh` call to GitHub asks by itself and waits. See [GitHub tokens](#github-tokens).
+Unlike every other grant, this one hands you a credential: revoking the grant stops new
+tokens, and does not recall one already minted. Do not copy the token anywhere.
 
 ### Telling sessions apart
 
@@ -743,6 +755,55 @@ available, stop and tell the owner.
 Tags are not signed: a tag object is refused, whatever the grant. `warden doctor` checks all
 of this, and the owner sees every signature in the audit log.
 
+### GitHub tokens
+
+Once, on each machine, and needing no grant: `warden setup github`. It points git's global
+`credential.https://github.com.helper` at warden alone, first an empty value, which drops the
+helpers configured before it, then `!<warden> git-credential`. It writes `~/.local/bin/gh`, a
+script that sets `GH_TOKEN` from `warden github token` and runs the real `gh`. It refuses to
+replace a `gh` there that it did not write, and warns on stderr when `~/.local/bin` is not
+before the real `gh` on `PATH`, as plain `gh` would then run without a token. With no `gh` on
+`PATH` it sets git up and writes no wrapper. It prints each change. Run it again after
+an upgrade that moves the warden binary, as Homebrew's can.
+
+After that `git push`, `git fetch` and `gh` work against GitHub as usual, with a token from
+warden. The token covers **every repository the owner's GitHub App is installed on**, with
+`contents`, `pull_requests` and `issues` write, and lasts an hour. warden keeps it in
+`github-token.json` in its state directory, mode 0600, and gets a new one when less than 5
+minutes of it remain. Use it only through `git` and `gh`: do not print it, write it into a
+file, put it in a URL or hand it to another program.
+
+**With no active grant**, the first call asks the owner itself: a request for 30 days, or the
+broker's maximum if that is shorter, with a
+fixed goal that says which program asked, followed by `, in <current directory>`. It says on
+stderr that it is asking and waits, as `warden request` does, for up to 11 minutes. To word the
+goal yourself or choose the window, run `warden request github` first.
+
+When no token can be had, `git` or `gh` fails, with the reason on stderr:
+
+| What you see | What to do |
+|---|---|
+| The request was denied, expired, cancelled or revoked, or the owner did not answer in time (exit 5, "do not retry … ask the owner"). | Stop. Do not retry in a loop and do not look for another way to reach GitHub: tell the owner what you need and why. |
+| The broker refused the call while the request was waiting, for example because the agent was revoked (exit 5 as well). | The same: tell the owner. |
+| "no active GitHub token grant" although the owner approved one (exit 5). | The grant was revoked since. Ask the owner why before asking again. |
+| "the GitHub App changed; request a new grant" (exit 5). | The owner changed the App or its installation. `warden request github --goal "…"`. |
+| The grant ended while the token was being minted (exit 5). | If the owner has just approved a new grant, run the command once more. Otherwise tell the owner. |
+| "GitHub tokens are not configured on this broker" (exit 1). | Tell the owner. |
+| "this agent has reached its limit of GitHub tokens for this hour" (exit 1). | Something on this machine asks for far more tokens than `git` and `gh` need (the CLI keeps one for its hour). Stop it rather than retrying, and tell the owner if you cannot find it. |
+| The broker refused the request when it was made, for example because the agent is over its [request limits](configuration.md#request-limits) (exit 1, with the wait in the message). | Wait that long, or reuse the request already pending. Do not retry sooner. |
+| GitHub or the broker is unavailable, or the broker cannot be reached (exit 1). | As in [When the broker is unreachable](#when-the-broker-is-unreachable): tell the owner and try again once it answers. `warden doctor` checks the connection. |
+
+Do not turn the helper off, give git another credential or ask for a token another way to get
+past this. `warden doctor` checks the setup (the `github.token` check), and the owner sees
+every token minted in the audit log.
+
+**Revoking and tokens.** A grant that is revoked or ends stops new tokens at once, but a
+token already minted works until GitHub ends it, at most an hour later. The cached one is
+served for the rest of its hour even after the owner revokes in the approval UI. `warden
+revoke <grant>` on this machine deletes it. There is no **Renew** button and no notice before
+a GitHub token grant ends: the next call after it ends asks the owner again, and approving a
+new grant ends the old one.
+
 ## Ending a grant
 
 When the work is done, revoke the grant. Do not let it run out on its own:
@@ -778,7 +839,7 @@ is reported once on stderr and never stops the command.
 | 2 | The request was denied. Do not retry the same request. Ask the owner what to change. |
 | 3 | The request expired without a decision. The owner may be away. Retry later, not in a loop. |
 | 4 | The grant was revoked: reported by `warden request`, or by `warden http` when the broker says the grant it used was revoked. `warden http` then removes the stale local record; request access again. |
-| 5 | Called by git to sign a commit, with no active commit signing grant. `warden ssh`, `warden ssh-config` or `warden http` found no active grant (for `warden http`, none that covers the method and path; for `warden ssh-config --min-remaining`, none that stays valid that long), or the broker said the grant `warden http` used has expired, whose local record is then removed. The message gives the `warden request …` command to run if the task needs it. `warden request collect` exits 5 too, when the grant is not live or is an SSH grant whose key is lost. |
+| 5 | Called by git to sign a commit, with no active commit signing grant. `warden github token` or git's credential helper could not get a GitHub token without going around the owner: the request they filed ended without a grant, the grant ended or was revoked, or the App changed. `warden ssh`, `warden ssh-config` or `warden http` found no active grant (for `warden http`, none that covers the method and path; for `warden ssh-config --min-remaining`, none that stays valid that long), or the broker said the grant `warden http` used has expired, whose local record is then removed. The message gives the `warden request …` command to run if the task needs it. `warden request collect` exits 5 too, when the grant is not live or is an SSH grant whose key is lost. |
 | 6 | The request was cancelled while `warden request` waited for it (`warden request cancel` from another terminal). |
 | 7 | `warden doctor --strict` found no failure, but could not check everything: see [Checking an agent machine](configuration.md#checking-an-agent-machine). Without `--strict` it exits 0 and lists those items. It exits 1 when a check failed. |
 | 8 | The broker stopped a `warden http` call that was out, because it could not read the grant's state. No response came back, and the API may have acted on the call: find out before repeating one that changes something. The grant stays; if this repeats, tell the owner. |
@@ -815,6 +876,9 @@ never try to get around warden by any other route.
 - **Revoking a proxied call in flight cannot undo it.** The call stops, but the API
   may already have acted on it.
 - **Revoking commit signing does not undo a signature.** It stops new ones.
+- **Revoking a GitHub token grant does not recall a token already minted.** It stops new
+  ones. A token already out works for up to an hour, and covers every repository the App is
+  installed on.
 - **Revoking does not invalidate an issued certificate** on the target
   ([issue #35][i35]).
 

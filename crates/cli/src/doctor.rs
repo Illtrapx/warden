@@ -9,6 +9,8 @@
 //! for it: whether the two versions are compatible is reported as
 //! could-not-check.
 
+mod github;
+
 use anyhow::Error;
 use url::Url;
 use warden_broker_proto::doctor::{Check, Report};
@@ -45,6 +47,10 @@ pub trait Probes {
     fn git_signing(&self) -> GitSigning;
     /// What the broker says about signing for this agent.
     async fn signing_state(&self, config: &Config) -> Result<SigningState, CallError>;
+    /// How git gets credentials for `https://github.com`.
+    fn github_setup(&self) -> Result<github::GithubSetup, String>;
+    /// Whether this agent has an active GitHub token grant.
+    async fn github_grant(&self, config: &Config) -> Result<bool, CallError>;
 }
 
 /// Git's settings for signing, each unset if `None`.
@@ -134,6 +140,16 @@ impl Probes for Live {
             public_key,
         })
     }
+
+    fn github_setup(&self) -> Result<github::GithubSetup, String> {
+        github::live_setup()
+    }
+
+    async fn github_grant(&self, config: &Config) -> Result<bool, CallError> {
+        let client =
+            Client::for_config(config).map_err(|e| CallError::Refused(format!("{e:#}")))?;
+        Ok(github::has_grant(&client.grants().await?))
+    }
 }
 
 /// The text of a failure to load the configuration. A parse error's text quotes
@@ -169,7 +185,8 @@ pub async fn examine(probes: &impl Probes) -> Report {
         checks: checks(probes).await,
         effects: "Read only: changed nothing on this machine. The broker saw an unauthenticated \
                   GET /v1/info and, if the credential is available, authenticated GET /v1/grants \
-                  calls and, if git signs through warden, GET /v1/commit-signing/key."
+                  calls and, if git signs through warden, GET /v1/commit-signing/key. It minted no \
+                  GitHub token."
             .to_owned(),
     }
 }
@@ -189,6 +206,7 @@ async fn checks(probes: &impl Probes) -> Vec<Check> {
                 "credential",
                 "broker.accepts-agent",
                 GIT_SIGNING,
+                github::NAME,
             ] {
                 checks.push(Check::could_not_check(
                     name,
@@ -239,6 +257,13 @@ async fn checks(probes: &impl Probes) -> Vec<Check> {
         None
     };
     checks.push(git_signing_check(&git, state));
+    let github = probes.github_setup();
+    let grant = if github.as_ref().is_ok_and(github::through_warden) && credential.is_ok() {
+        Some(probes.github_grant(&config).await)
+    } else {
+        None
+    };
+    checks.push(github::check(&github, grant));
     checks.push(version_check());
     checks
 }
@@ -476,6 +501,7 @@ mod tests {
 
     fn info(id: &str, protocols: &[&str]) -> InfoResponse {
         InfoResponse {
+            github_token_max_window: None,
             protocols: protocols.iter().map(|p| (*p).to_owned()).collect(),
             audience: audience(id),
         }
@@ -529,6 +555,14 @@ mod tests {
         fn accepted(&self, _config: &Config) -> impl Future<Output = Result<(), CallError>> {
             self.called_accepted.set(true);
             ready(self.accepted.clone())
+        }
+
+        fn github_setup(&self) -> Result<super::github::GithubSetup, String> {
+            Ok(super::github::GithubSetup::default())
+        }
+
+        fn github_grant(&self, _config: &Config) -> impl Future<Output = Result<bool, CallError>> {
+            ready(Err(CallError::Unavailable("not asked here".to_owned())))
         }
     }
 

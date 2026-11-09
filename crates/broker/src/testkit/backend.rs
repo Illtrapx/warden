@@ -13,8 +13,8 @@ use zeroize::Zeroizing;
 
 use super::{NAS_HOST, PI_HOST};
 use crate::policy::{
-    ApiSecretPolicy, CaKey, CommitSigningKey, PolicyError, RelayCredential, SecretBackend,
-    SecretValue, SshMode, SshTarget, ValueFormat, not_a_relay_target,
+    ApiSecretPolicy, CaKey, CommitSigningKey, GithubAppKey, PolicyError, RelayCredential,
+    SecretBackend, SecretValue, SshMode, SshTarget, ValueFormat, not_a_relay_target,
 };
 
 /// An in-memory [`SecretBackend`]: targets (with relay credentials) and API
@@ -28,6 +28,9 @@ pub struct FakeBackend {
     commit_signing: Mutex<Option<PrivateKey>>,
     commit_signing_outage: Mutex<Option<String>>,
     commit_signing_reads: std::sync::atomic::AtomicUsize,
+    github_app: Mutex<Option<GithubAppKey>>,
+    github_app_outage: Mutex<Option<String>>,
+    github_app_reads: std::sync::atomic::AtomicUsize,
     target_outage: Mutex<Option<String>>,
     ca_outage: Mutex<Option<String>>,
     ca_state: Mutex<CaState>,
@@ -64,6 +67,9 @@ impl FakeBackend {
             )),
             commit_signing_outage: Mutex::new(None),
             commit_signing_reads: std::sync::atomic::AtomicUsize::new(0),
+            github_app: Mutex::new(None),
+            github_app_outage: Mutex::new(None),
+            github_app_reads: std::sync::atomic::AtomicUsize::new(0),
             target_outage: Mutex::new(None),
             ca_outage: Mutex::new(None),
             ca_state: Mutex::new(CaState::Usable),
@@ -295,6 +301,30 @@ impl FakeBackend {
             .load(std::sync::atomic::Ordering::SeqCst)
     }
 
+    /// Make GitHub App lookups fail with [`PolicyError::Unavailable`] carrying
+    /// `detail` (`None` restores them).
+    ///
+    /// # Panics
+    /// If the lock is poisoned.
+    pub fn set_github_app_outage(&self, detail: Option<&str>) {
+        *self.github_app_outage.lock().expect("outage lock poisoned") = detail.map(str::to_owned);
+    }
+
+    /// Replace the GitHub App (`None`: none is configured, which is the default).
+    ///
+    /// # Panics
+    /// If the lock is poisoned.
+    pub fn set_github_app(&self, app: Option<GithubAppKey>) {
+        *self.github_app.lock().expect("app lock poisoned") = app;
+    }
+
+    /// How many times the GitHub App has been read.
+    #[must_use]
+    pub fn github_app_reads(&self) -> usize {
+        self.github_app_reads
+            .load(std::sync::atomic::Ordering::SeqCst)
+    }
+
     /// The SSH CA's private key, to configure the same key for something else.
     #[must_use]
     pub fn ca_private_key(&self) -> PrivateKey {
@@ -436,6 +466,26 @@ impl SecretBackend for FakeBackend {
             .lock()
             .map_err(|_| PolicyError::Unavailable("fake backend lock poisoned".to_owned()))?;
         Ok(state != CaState::Absent)
+    }
+
+    async fn has_github_app(&self) -> Result<bool, PolicyError> {
+        Self::outage(&self.github_app_outage)?;
+        Ok(self
+            .github_app
+            .lock()
+            .map_err(|_| PolicyError::Unavailable("fake backend lock poisoned".to_owned()))?
+            .is_some())
+    }
+
+    async fn github_app(&self) -> Result<GithubAppKey, PolicyError> {
+        Self::outage(&self.github_app_outage)?;
+        self.github_app_reads
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        self.github_app
+            .lock()
+            .map_err(|_| PolicyError::Unavailable("fake backend lock poisoned".to_owned()))?
+            .clone()
+            .ok_or(PolicyError::NoGithubApp)
     }
 
     async fn has_commit_signing_key(&self) -> Result<bool, PolicyError> {

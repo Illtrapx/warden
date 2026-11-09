@@ -55,6 +55,18 @@ pub(super) fn secs_label(secs: i64) -> String {
         .map_or_else(|| format!("{secs}s"), |w| window_label(w).to_owned())
 }
 
+/// When a grant ends, for one that can last months: the date, and how far off it is.
+pub(super) fn ends(not_after: i64, now: i64) -> Markup {
+    let (date, time) = utc_parts(not_after);
+    let left = (not_after - now).max(0);
+    let far = match left {
+        0..7200 => format!("{} min", (left + 59) / 60),
+        7200..172_800 => format!("{} h", left / 3600),
+        _ => format!("{} days", left / 86_400),
+    };
+    html! { span { "Ends " (date) " " (time) " (in " (far) ")" } }
+}
+
 /// `YYYY-MM-DD` and `HH:MM:SS UTC` for Unix seconds `ts`, so a narrow
 /// column can break between them and nowhere else.
 pub(super) fn utc_parts(ts: i64) -> (String, String) {

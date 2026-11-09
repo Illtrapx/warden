@@ -10,7 +10,7 @@ sessions are closed. On an SSH certificate target new logins stop, but a session
 already open keeps running until it ends or is ended on the target. The agent's
 machine holds no reusable SSH key, API token or target password, only the agent's
 own identity key, which can ask for access and use active grants but cannot approve
-anything.
+anything. The exception is a [GitHub token](#github-tokens), which the agent holds for an hour.
 
 The [project page](https://pecheriere.github.io/warden/) shows the flow, the
 use cases and how to start.
@@ -144,6 +144,7 @@ What warden can grant:
 | **SSH, certificate mode** | A certificate signed by warden's SSH CA, for a key that exists only in memory. It is valid for new logins during the window. A session already open keeps running after it, and warden cannot end it. | A reusable key for the target. |
 | **SSH, relay mode** (appliances, password-only hosts) | A session through warden's SSH relay; warden logs in to the target. warden closes the session when the window ends or the grant is revoked. | The target's key or password. |
 | **HTTP API calls** | warden makes each call, adds the secret, and returns the answer with the secret redacted. Calls are refused once the window ends or the grant is revoked. | The API secret. |
+| **GitHub** | A token from a [GitHub App](docs/github-app.md) you create for your agents, minted by warden for each hour of use under a grant of up to 30 days, for `git` and `gh`. | The App's private key. **The token itself is the exception:** the agent holds it for an hour, it covers every repository the App is installed on, and revoking a grant does not recall one already minted. |
 
 ## Recommended setup
 
@@ -311,6 +312,25 @@ unsigned for you. It signs commits only, never tags. See
 [Deployment](docs/deployment.md#3-1password) and the
 [threat model](docs/threat-model.md#commit-signing).
 
+## GitHub tokens
+
+warden can give an agent a token for GitHub, from a GitHub App you create and install only
+on the repositories the agent may reach, so that no personal access token or deploy key lives
+on its machine:
+
+```sh
+warden request github --goal "Push branches and open PRs for build-agent's fixes"   # 30 days, after your passkey
+warden setup github                                    # git and gh take tokens from warden
+git push                                               # a token for the next hour, with no prompt
+```
+
+The token is the one credential in warden that the agent holds and can use on its own: it
+lasts an hour, covers every repository the App is installed on, with `contents`, `pull
+requests` and `issues` write, and **revoking a grant does not recall a token already
+minted**. What an agent can do with it is decided on GitHub, by where you install the App
+and the rules you set there. See [GitHub tokens for agents](docs/github-app.md) and the
+[threat model](docs/threat-model.md#github-tokens).
+
 ## Documentation
 
 | Document | For |
@@ -319,7 +339,8 @@ unsigned for you. It signs commits only, never tags. See
 | [Deployment](docs/deployment.md) | Running warden safely: Tailscale, 1Password Connect, networks, notifications, backups, upgrades. |
 | [Configuration](docs/configuration.md) | Every environment variable and command of the server and the CLI. |
 | [SSH targets](docs/ssh-targets.md) | Setting up hosts: one user per agent, certificate-only logins, relay targets. |
-| [1Password items](docs/1password-items.md) | The exact tags and fields of targets, API secrets and the CA. |
+| [1Password items](docs/1password-items.md) | The exact tags and fields of targets, API secrets, the CA, the signing key and the GitHub App. |
+| [GitHub tokens](docs/github-app.md) | Creating the GitHub App for agents, its limits, and what to set up on GitHub. |
 | [Local files](docs/local-backend.md) | The weaker backend without 1Password: its policy file, secret files and what it gives up. |
 | [Notifications](docs/notifications.md) | Home Assistant and ntfy. |
 | [Agent usage](docs/agent-usage.md) | Setting up an agent and how it should ask for access. |
@@ -346,7 +367,7 @@ unsigned for you. It signs commits only, never tags. See
 - **An agent can only ask.** Every grant needs a passkey approval from your
   enrolled device, on an approval page that only your phone can reach.
 - **Bounded grants.** At most four hours (a [commit signing](#signing-commits)
-  grant alone can last longer), one target or secret, the account
+  or [GitHub token](#github-tokens) grant alone can last longer), one target or secret, the account
   or methods you approved. API requests are read-only unless the agent asks
   for more, and the page says so. On a certificate target the limit is on new
   logins: [one already open continues](docs/threat-model.md#accepted-residual-risks).
@@ -355,7 +376,8 @@ unsigned for you. It signs commits only, never tags. See
   leave warden. The agent keeps only its own identity key, a signing key or a
   bearer key. It can ask for access and use active grants until you revoke the
   agent, but cannot approve anything. A key in hardware cannot be copied; a key
-  file or a bearer key [can be](docs/security-assessment.md#ranked-risks).
+  file or a bearer key [can be](docs/security-assessment.md#ranked-risks). The
+  exception is a [GitHub token](#github-tokens): the agent holds it for an hour.
 - **Nothing on the internet.** warden is reachable only over your tailnet,
   never through Funnel.
 - **Audited.** Every request, decision, relay session and API call goes to a

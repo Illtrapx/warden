@@ -317,6 +317,9 @@ pub struct Config {
     /// `WARDEN_COMMIT_SIGNING_MAX_PER_DAY`, default 5000, 1 to 1000000: signatures per
     /// commit signing grant per UTC day.
     pub commit_signing_max_per_day: u32,
+    /// `WARDEN_GITHUB_TOKEN_MAX_WINDOW`, default `30d`: the longest GitHub token
+    /// grant the server allows, `1d`, `7d` or `30d`.
+    pub github_token_max_window: Window,
     /// `WARDEN_REQUEST_LINK_HOSTS`: the hosts a request may link to. Unset, no
     /// request may carry a link.
     pub link_hosts: LinkHosts,
@@ -499,6 +502,20 @@ fn commit_signing_limits(
     Ok((window, per_day))
 }
 
+/// The longest GitHub token grant, from the environment. Unlike most settings, one
+/// that is set and empty is refused instead of read as unset: it bounds how long an
+/// agent may hold access, so a mistake must not fall back to the default.
+fn github_token_max_window(
+    get: &impl Fn(&'static str) -> Option<String>,
+) -> Result<Window, ConfigError> {
+    get("WARDEN_GITHUB_TOKEN_MAX_WINDOW").map_or(Ok(Window::GITHUB_TOKEN_DEFAULT), |raw| {
+        Window::github_token(raw.trim()).map_err(|_| ConfigError::Invalid {
+            var: "WARDEN_GITHUB_TOKEN_MAX_WINDOW",
+            reason: "must be 1d, 7d or 30d",
+        })
+    })
+}
+
 /// The secret in the file at `path`, which `var` names: one line, without its
 /// line ending. It must be a regular file that other users cannot access.
 fn read_secret_file(var: &'static str, path: &Path) -> Result<Zeroizing<String>, ConfigError> {
@@ -625,6 +642,7 @@ impl Config {
         let proxy = proxy_limits(&get)?;
         let requests = request_limits(&get)?;
         let (commit_signing_max_window, commit_signing_max_per_day) = commit_signing_limits(&get)?;
+        let github_token_max_window = github_token_max_window(&lookup)?;
         let link_hosts = get("WARDEN_REQUEST_LINK_HOSTS")
             .map_or_else(
                 || Ok(LinkHosts::default()),
@@ -673,6 +691,7 @@ impl Config {
             requests,
             commit_signing_max_window,
             commit_signing_max_per_day,
+            github_token_max_window,
             link_hosts,
             relay,
             body_read_timeout: BodyReadTimeout::default(),

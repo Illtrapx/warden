@@ -491,7 +491,8 @@ fn check_policy(
         (Access::Api { .. }, Destination::Api(policy)) => {
             api_scope(&view.request, policy).map(drop)
         }
-        (Access::CommitSigning {}, Destination::CommitSigning(_)) => Ok(()),
+        (Access::CommitSigning {}, Destination::CommitSigning(_))
+        | (Access::GithubToken {}, Destination::GithubToken(_)) => Ok(()),
         _ => Err("the request does not match its policy kind".to_owned()),
     }
 }
@@ -512,7 +513,7 @@ pub(crate) fn api_scope(
             path_prefix,
             ..
         } => policy.scope(methods.as_deref(), path_prefix.as_deref()),
-        Access::Ssh { .. } | Access::CommitSigning {} => {
+        Access::Ssh { .. } | Access::CommitSigning {} | Access::GithubToken {} => {
             Err("the request does not match its policy kind".to_owned())
         }
     }
@@ -652,6 +653,15 @@ async fn approve_finish(
                 not_before,
                 not_after,
                 access: GrantAccess::CommitSigning(policy.grant()),
+            },
+            Err((context, cause)) => return internal(context, &cause),
+        },
+        Destination::GithubToken(policy) => match validity(binding.window, now) {
+            Ok((not_before, not_after)) => GrantView {
+                grant_id: Id::random(),
+                not_before,
+                not_after,
+                access: GrantAccess::GithubToken(policy.grant()),
             },
             Err((context, cause)) => return internal(context, &cause),
         },

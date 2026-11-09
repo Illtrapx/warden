@@ -14,6 +14,7 @@ specified. Interfaces with a reference of their own are linked, not repeated.
 | `warden` commands | Agents and people on the agent's machine | [CLI commands](configuration.md#cli-commands), [exit codes](agent-usage.md#exit-codes) |
 | Server settings | The operator | [Environment variables](configuration.md#server-environment-variables), [secrets in files](configuration.md#secrets-in-files) |
 | Git's signing program (`warden -Y sign -n git -f <key> [-U] <file>`, writing `<file>.sig`) | Git on the agent's machine | [Signing commits](agent-usage.md#signing-commits) |
+| Git's credential helper (`warden git-credential get`, with git's `key=value` lines on stdin and the token on stdout) | Git on the agent's machine | [GitHub tokens](agent-usage.md#github-tokens) |
 | CLI settings and files | The agent's machine | [CLI environment and files](configuration.md#cli-environment-and-files) |
 | 1Password items | The owner, in the vault | [1Password items](1password-items.md) |
 | Local policy and secret files, with `WARDEN_SECRET_BACKEND=local` | Whoever can write them on the host | [Local files](local-backend.md) |
@@ -22,12 +23,14 @@ specified. Interfaces with a reference of their own are linked, not repeated.
 
 | Interface | Why | What it sends | Reference |
 |---|---|---|---|
-| 1Password Connect API | Policy, secrets, the CA key and the commit signing key | `GET` requests, with the token as a bearer | [Deployment](deployment.md#3-1password) |
+| 1Password Connect API | Policy, secrets, the CA key, the commit signing key and the GitHub App | `GET` requests, with the token as a bearer | [Deployment](deployment.md#3-1password) |
 | Home Assistant webhook, ntfy | Notifications | The agent, the access, a stated session label, a shortened goal, a link | [Notifications](notifications.md) |
+| `api.github.com` | Minting GitHub tokens | A JWT signed with the App's key, as a bearer, in a `POST` to the installation's access tokens with the fixed permissions | [GitHub tokens](github-app.md) |
 | API origins | Proxied calls | The agent's call, with the secret in the policy's header | [HTTP proxy mode](design.md#83-http-proxy-mode-secret-injection) |
 | Relay targets | Relayed sessions | An SSH login with the item's credential | [SSH relay mode](design.md#82-ssh-relay-mode) |
 | Certificate targets | Nothing: the agent's `ssh` connects, and warden never does | A certificate, presented by the agent | [SSH targets](ssh-targets.md) |
 | OpenSSH tools on the agent's machine | The CLI runs `ssh` and `ssh-agent`, and talks to `ssh-agent` sockets | Keys, and data to sign | [One-time setup](agent-usage.md#one-time-setup) |
+| `git` on the agent's machine | `warden setup github` runs `git config` to set the credential helper, and `warden doctor` reads it. Git runs `warden git-credential` for `https://github.com`. | Settings, and git's credential lines | [GitHub tokens](agent-usage.md#github-tokens) |
 | `git` and `ssh-keygen` on the agent's machine | `warden setup git` runs `git config`. Git runs `warden` as its signing program, which sends every `-Y` operation except signing on to `ssh-keygen` as it is. | Settings, and what git asked to verify | [Signing commits](agent-usage.md#signing-commits) |
 
 ## What warden writes
@@ -35,6 +38,7 @@ specified. Interfaces with a reference of their own are linked, not repeated.
 | Output | Format | Reference |
 |---|---|---|
 | Audit log | One JSON object per line, in a hash chain: `{"seq","ts","prev","event","hash"}`. `event` has a `type`. The types are in [`audit.rs`](../crates/broker/src/audit.rs). | [Audit log](design.md#11-audit-log), `warden-server audit verify` |
+| `~/.local/bin/gh` and `github-token.json` | `warden setup github` writes a `gh` wrapper (a shell script with a marker line); the CLI caches the GitHub token in its state directory, mode 0600 | [GitHub tokens](agent-usage.md#github-tokens) |
 | Standard output | Logs (`RUST_LOG`), and each audit entry again under the target `audit` | [Server data](configuration.md#server-data) |
 | SQLite database | Internal; it may change between releases, with one-way migrations | [Backups and upgrades](deployment.md#9-backups-and-upgrades) |
 

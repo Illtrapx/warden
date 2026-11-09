@@ -42,7 +42,7 @@ pub fn elsewhere_note(grant: &GrantView, local: &[Id]) -> String {
              warden revoke {id})"
         ),
         // The broker signs under the grant: there is nothing to have on a machine.
-        GrantAccess::CommitSigning(_) => String::new(),
+        GrantAccess::CommitSigning(_) | GrantAccess::GithubToken(_) => String::new(),
     }
 }
 
@@ -69,6 +69,7 @@ pub fn broker_grant_line(grant: &GrantView, local: &[Id]) -> String {
         GrantAccess::CommitSigning(signing) => {
             format!("commit signing with {}", signing.key_fingerprint)
         }
+        GrantAccess::GithubToken(_) => "github token".to_owned(),
     };
     sanitize(&format!(
         "  {subject}  grant {}  until {}{}",
@@ -97,6 +98,7 @@ fn access_summary(access: &Access) -> String {
             }
         }
         Access::CommitSigning {} => "commit signing".to_owned(),
+        Access::GithubToken {} => "github token".to_owned(),
     }
 }
 
@@ -179,6 +181,11 @@ fn plan(grant_id: &Id, live: Vec<GrantView>, local: &[Id]) -> Result<Collected, 
              so it needs nothing on this machine. Once `warden setup git` has run here, `git \
              commit` uses it"
         ))),
+        GrantAccess::GithubToken(_) => Ok(Collected::NothingToCollect(format!(
+            "grant {grant_id} has nothing to collect: it is live, and the broker mints GitHub \
+             tokens under it, so it needs nothing on this machine. Once `warden setup github` has \
+             run here, git and gh use it"
+        ))),
     }
 }
 
@@ -188,8 +195,8 @@ fn plan(grant_id: &Id, live: Vec<GrantView>, local: &[Id]) -> Result<Collected, 
 ///
 /// # Errors
 /// [`Exit`] with [`EXIT_NO_GRANT`] when no usable grant can be collected, which
-/// calls for a new request, and with [`EXIT_ERROR`] for a commit signing grant,
-/// which does not; a failed call or write.
+/// calls for a new request, and with [`EXIT_ERROR`] for a commit signing or GitHub
+/// token grant, which does not; a failed call or write.
 pub async fn collect(grant_id: &Id) -> Result<()> {
     let (_, client) = client()?;
     let live = client.grants().await?;
@@ -214,7 +221,8 @@ pub async fn collect(grant_id: &Id) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use warden_broker_proto::{
-        ApiGrant, CommitSigningGrant, GrantAccess, GrantView, Id, RelayGrant, Window,
+        ApiGrant, CommitSigningGrant, GithubTokenGrant, GrantAccess, GrantView, Id, RelayGrant,
+        Window,
     };
 
     use super::{
@@ -293,6 +301,29 @@ mod tests {
             message.contains(&format!("warden revoke {id}")),
             "{message}"
         );
+    }
+
+    #[test]
+    fn a_github_token_grant_has_nothing_to_collect_and_no_note() {
+        let grant = GrantView {
+            grant_id: Id::random(),
+            not_before: 100,
+            not_after: 200,
+            access: GrantAccess::GithubToken(GithubTokenGrant {
+                app_id: "123456".to_owned(),
+                installation_id: 7,
+                digest: "d".repeat(64),
+            }),
+        };
+        assert_eq!(elsewhere_note(&grant, &[]), "");
+        assert!(broker_grant_line(&grant, &[]).contains("github token"));
+        let id = grant.grant_id.clone();
+        let Ok(Collected::NothingToCollect(message)) = plan(&id, vec![grant], &[]) else {
+            panic!("expected nothing to collect");
+        };
+        assert!(message.contains(&id.to_string()), "{message}");
+        assert!(message.contains("warden setup github"), "{message}");
+        assert_eq!(access_summary(&Access::GithubToken {}), "github token");
     }
 
     #[test]

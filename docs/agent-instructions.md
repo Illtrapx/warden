@@ -57,9 +57,9 @@ warden request cancel <request-id>
 ```
 
 If the command was killed or you lost its output, `warden status` lists your pending
-requests and live grants, and asks the person nothing. For an API or commit signing
-request still pending, run the same command again to wait on it. A commit signing
-grant then needs nothing more. For an API grant that status says is not on this
+requests and live grants, and asks the person nothing. For an API, commit signing or GitHub
+token request still pending, run the same command again to wait on it. A commit signing or
+GitHub token grant then needs nothing more. For an API grant that status says is not on this
 machine:
 
 ```sh
@@ -136,6 +136,22 @@ warden request signing --goal "<which agent, and what it commits to>"
 If it fails because the broker cannot be reached, stop and tell the person. Do not turn
 signing off, and do not commit another way, to get past this. A signature says warden signed
 for you, not that anyone reviewed your change.
+
+### GitHub, if this machine uses warden for it
+
+If `warden setup github` was run here, `git` and `gh` get a token for GitHub from warden
+with no prompt. Use them as usual and never print the token, write it into a file or hand it
+to anything else. With no grant, the first call asks the person itself and waits. If it ends
+with "do not retry … ask the owner" (exit 5), stop and tell the person what you needed and
+why: do not retry in a loop, and do not use another credential or turn the helper off. To ask
+ahead, with a goal of your own:
+
+```sh
+warden request github --goal "<which agent, and what it pushes or opens>"
+```
+
+The token covers every repository the person installed the App on, and revoking does not
+recall one already minted, so keep to the repository your task is about.
 
 ### When you are finished
 
