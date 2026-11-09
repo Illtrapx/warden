@@ -19,18 +19,23 @@ All notable changes to this project are recorded here. The format follows
   access where an agent holds a usable credential. A grant lasts 1, 7 or 30 days (30 by
   default), up to the new `WARDEN_GITHUB_TOKEN_MAX_WINDOW` (`1d`, `7d` or `30d`, an error if
   set but empty). Approving a new one ends the agent's previous one, and there is no renew
-  button and no notice before it ends. There is no migration. See
+  button and no notice before it ends. New migration `0009_github_token_mints`, which counts each grant's tokens per hour.
+  As with every migration, rolling back means restoring the backup together with the old
+  version. See
   [GitHub tokens for agents](docs/github-app.md) and the
   [threat model](docs/threat-model.md#github-tokens).
   - `POST /v1/github-token` mints a token under the calling agent's grant, with an empty
     object as its body. Each token and each refusal is audited (`github_token_minted`,
     `github_token_refused`, and `github_token_refusals_held` beyond 30 refusals a minute per
-    agent), never with the token. See [the protocol](docs/agent-protocol.md#post-v1github-token).
+    agent), never with the token. An agent gets at most 60 tokens an hour (`429` beyond).
+    See [the protocol](docs/agent-protocol.md#post-v1github-token).
+  - `GET /v1/info` publishes `github_token_max_window`, so that a request made by `git` or
+    `gh` asks for no longer than the broker allows.
   - `warden request github [--for 1d|7d|30d] --goal …` asks for a grant. `warden setup github`
     sets git's `credential.https://github.com.helper` to warden alone and writes a `gh`
     wrapper at `~/.local/bin/gh`; `warden github token` prints a token; git runs `warden
-    git-credential`. With no grant, `git` and `gh` ask the owner themselves, wait, and exit 5
-    if it is not approved. The CLI caches the token in `github-token.json` in its state
+    git-credential`. With no grant, `git` and `gh` ask the owner themselves (for 30 days, or
+    the broker's maximum if shorter), wait, and exit 5 if it is not approved. The CLI caches the token in `github-token.json` in its state
     directory (mode 0600) for the rest of its hour, and `warden revoke` on that machine
     deletes it. See [Agent usage](docs/agent-usage.md#github-tokens).
   - `warden doctor` has a `github.token` check, and `warden-server doctor` a `github-app`

@@ -348,6 +348,11 @@ pub struct InfoResponse {
     pub protocols: Vec<String>,
     /// The broker's audience.
     pub audience: signing::Audience,
+    /// The longest GitHub token grant this broker allows
+    /// (`WARDEN_GITHUB_TOKEN_MAX_WINDOW`), so that a request made by git or `gh`
+    /// asks for no more. Absent from brokers older than GitHub tokens.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub github_token_max_window: Option<Window>,
 }
 
 /// Error body returned by the API.

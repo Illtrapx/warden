@@ -14,6 +14,10 @@ pub const NO_ACTIVE_GRANT: &str = "no active GitHub token grant for this agent";
 /// owner approved. The CLI recognises it to say a new grant is needed.
 pub const APP_CHANGED: &str = "the GitHub App changed; request a new grant";
 
+/// What the broker says when an agent has had all the tokens it may have this hour.
+pub const HOURLY_LIMIT: &str = "this agent has reached its limit of GitHub tokens for this \
+                                hour; it starts again at the top of the hour";
+
 /// What the broker says when it holds no GitHub App.
 pub const NOT_CONFIGURED: &str = "GitHub tokens are not configured on this broker";
 

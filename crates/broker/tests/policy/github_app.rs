@@ -125,6 +125,29 @@ async fn github_app_repeated_label_is_refused() {
 }
 
 #[tokio::test]
+async fn github_app_repeated_label_is_refused_even_without_a_value() {
+    for empty in [
+        json!({"id": "y1", "type": "STRING", "label": "private_key"}),
+        json!({"id": "y2", "type": "STRING", "label": "private_key", "value": ""}),
+    ] {
+        for first in [true, false] {
+            let mut fields = full(RSA2048_PKCS8);
+            if first {
+                fields.insert(0, empty.clone());
+            } else {
+                fields.push(empty.clone());
+            }
+            let server = with_item(fields).await;
+            let err = backend(&server).github_app().await.unwrap_err();
+            assert!(
+                reason(&err).contains("\"private_key\" appears more than once"),
+                "{empty} first={first}: {err:?}"
+            );
+        }
+    }
+}
+
+#[tokio::test]
 async fn github_app_non_numeric_installation_is_invalid() {
     for bad in ["abc", "-1", "0", "1.5", "99999999999999999999999"] {
         let mut fields = full(RSA2048_PKCS8);

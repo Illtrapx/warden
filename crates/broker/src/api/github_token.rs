@@ -11,7 +11,7 @@ use axum::extract::State;
 use axum::http::StatusCode;
 use secrecy::ExposeSecret as _;
 use warden_broker_proto::github_token::{
-    APP_CHANGED, GithubTokenResponse, NO_ACTIVE_GRANT, PERMISSIONS,
+    APP_CHANGED, GithubTokenResponse, HOURLY_LIMIT, NO_ACTIVE_GRANT, PERMISSIONS,
 };
 use warden_broker_proto::{AgentName, Id};
 
@@ -104,6 +104,10 @@ async fn attempt(
     let current = key.policy(state.requests.github_token_max());
     if current.destination_digest() != grant.digest {
         return Err(refused(StatusCode::CONFLICT, APP_CHANGED));
+    }
+    // Taken before GitHub is asked, so that refused calls cost GitHub nothing.
+    if !state.requests.take_mint(&grant_id).await? {
+        return Err(refused(StatusCode::TOO_MANY_REQUESTS, HOURLY_LIMIT));
     }
     let minted = github_app::mint(&state.github, &key, state.clock.now())
         .await

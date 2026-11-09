@@ -773,7 +773,8 @@ warden. The token covers **every repository the owner's GitHub App is installed 
 minutes of it remain. Use it only through `git` and `gh`: do not print it, write it into a
 file, put it in a URL or hand it to another program.
 
-**With no active grant**, the first call asks the owner itself: a request for 30 days, with a
+**With no active grant**, the first call asks the owner itself: a request for 30 days, or the
+broker's maximum if that is shorter, with a
 fixed goal that says which program asked, followed by `, in <current directory>`. It says on
 stderr that it is asking and waits, as `warden request` does, for up to 11 minutes. To word the
 goal yourself or choose the window, run `warden request github` first.
@@ -788,6 +789,7 @@ When no token can be had, `git` or `gh` fails, with the reason on stderr:
 | "the GitHub App changed; request a new grant" (exit 5). | The owner changed the App or its installation. `warden request github --goal "…"`. |
 | The grant ended while the token was being minted (exit 5). | If the owner has just approved a new grant, run the command once more. Otherwise tell the owner. |
 | "GitHub tokens are not configured on this broker" (exit 1). | Tell the owner. |
+| "this agent has reached its limit of GitHub tokens for this hour" (exit 1). | Something on this machine asks for far more tokens than `git` and `gh` need (the CLI keeps one for its hour). Stop it rather than retrying, and tell the owner if you cannot find it. |
 | The broker refused the request when it was made, for example because the agent is over its [request limits](configuration.md#request-limits) (exit 1, with the wait in the message). | Wait that long, or reuse the request already pending. Do not retry sooner. |
 | GitHub or the broker is unavailable, or the broker cannot be reached (exit 1). | As in [When the broker is unreachable](#when-the-broker-is-unreachable): tell the owner and try again once it answers. `warden doctor` checks the connection. |
 

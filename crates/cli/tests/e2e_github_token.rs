@@ -163,12 +163,17 @@ struct Setup {
 }
 
 async fn setup() -> Setup {
+    setup_with_max(Window::GITHUB_TOKEN_DEFAULT).await
+}
+
+/// A broker allowing GitHub token grants of up to `max`.
+async fn setup_with_max(max: Window) -> Setup {
     let upstream = HttpsUpstream::start().await;
     let api = GithubApi::pinned(
         upstream.origin().parse().unwrap(),
         upstream.ca_pem().as_bytes().to_vec(),
     );
-    let broker = TestBroker::with_github_api(api).await;
+    let broker = TestBroker::with_github(api, max, 60).await;
     broker.backend.set_github_app(Some(github_app_key().0));
     // Token expiry is judged by the local clock, so the broker keeps the real time.
     broker.clock.set(now());
@@ -447,6 +452,27 @@ async fn other_kinds_still_refuse_a_pending_request_of_another_fingerprint() {
         text(&other.stderr).contains("fingerprint differs"),
         "{}",
         text(&other.stderr)
+    );
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn an_automatic_request_asks_for_no_more_than_the_broker_allows() {
+    let s = setup_with_max(Window::D7).await;
+    script_token(&s, TOKEN);
+    let mut cmd = s.machine.warden();
+    cmd.args(["git-credential", "get"]);
+    let child = spawn_with_input(&mut cmd, GITHUB_INPUT);
+    let token = CapturingNotifier::token(&s.broker.capture.next().await);
+    let status = s.machine.warden().arg("status").output().unwrap();
+    let listed = text(&status.stdout);
+    assert!(listed.contains("github token for 7d"), "{listed}");
+    let approved = s.broker.approve(&token, Window::D7).await;
+    assert!(approved.status.is_success(), "{}", approved.body);
+    let out = wait(child).await;
+    assert_eq!(out.status.code(), Some(0), "{}", text(&out.stderr));
+    assert_eq!(
+        text(&out.stdout),
+        format!("username=x-access-token\npassword={TOKEN}\n")
     );
 }
 

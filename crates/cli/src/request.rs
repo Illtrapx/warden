@@ -13,7 +13,7 @@ use warden_broker_proto::{
     is_read_only, modifying_methods, under_prefix,
 };
 
-use crate::client::{CallError, Client, MAX_WAIT_SECS};
+use crate::client::{CallError, Client, MAX_WAIT_SECS, fetch_info};
 use crate::config::Config;
 use crate::install::install_grant;
 use crate::request_context::{self, Answered, RequestContext, compare};
@@ -214,8 +214,8 @@ pub(crate) async fn request_github(
 }
 
 /// Ask the owner for a GitHub token grant on behalf of git or `gh`, which found
-/// none, and wait for the decision as `warden request` does: a 30-day window, the
-/// session label from the environment. Writes only to stderr, as git and the `gh`
+/// none, and wait for the decision as `warden request` does: the longest window up
+/// to 30 days that the broker allows, the session label from the environment. Writes only to stderr, as git and the `gh`
 /// wrapper read stdout. A pending GitHub token request of this agent made some
 /// other way is waited on instead: the broker keeps one per agent, and any of them
 /// grants the same.
@@ -230,7 +230,11 @@ pub(crate) async fn request_github_for_tool(
     goal: Goal,
 ) -> Result<()> {
     let (session, link) = resolve_context(RequestContext::default())?;
-    let req = github_request(goal, Window::GITHUB_TOKEN_DEFAULT, session, link);
+    let max = fetch_info(&config.server)
+        .await
+        .ok()
+        .and_then(|info| info.github_token_max_window);
+    let req = github_request(goal, tool_window(max), session, link);
     eprintln!("warden: this agent has no active GitHub token grant; asking the owner for one");
     let grant = request_grant(config, client, &req, GITHUB_SUBJECT, Pending::AnyOfKind)
         .await
@@ -242,6 +246,19 @@ pub(crate) async fn request_github_for_tool(
         local_time(grant.not_after)
     );
     Ok(())
+}
+
+/// The window of a request made for git or `gh`, given the broker's longest: the
+/// longest GitHub token window up to it, and 30 days from a broker that does not
+/// say, as one older than this setting allows that.
+fn tool_window(max: Option<Window>) -> Window {
+    max.map_or(Window::GITHUB_TOKEN_DEFAULT, |max| {
+        Window::GITHUB_TOKEN
+            .into_iter()
+            .filter(|window| *window <= max && *window <= Window::GITHUB_TOKEN_DEFAULT)
+            .max()
+            .unwrap_or(Window::D1)
+    })
 }
 
 /// What completes "a request …" for a GitHub token request.

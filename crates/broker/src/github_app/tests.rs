@@ -137,6 +137,22 @@ async fn mint_refuses_oversize() {
 }
 
 #[tokio::test]
+async fn mint_refuses_oversize_without_a_length() {
+    // No Content-Length: the cap is applied while the chunks come in.
+    let scripted = Scripted::with_body(201, vec![b' '; 64 * 1024 + 1]).chunked();
+    assert_eq!(refused(scripted).await, MintError::TooLarge);
+    // Exactly the cap, in chunks, is read whole (and then parsed).
+    let mut body = json!({"token": "ghs_test", "expires_at": EXPIRES_AT})
+        .to_string()
+        .into_bytes();
+    body.resize(64 * 1024, b' ');
+    let minted = mint_with(Scripted::with_body(201, body).chunked())
+        .await
+        .unwrap();
+    assert_eq!(minted.token.expose_secret(), "ghs_test");
+}
+
+#[tokio::test]
 async fn mint_refuses_malformed_answers() {
     for body in [
         "not json".to_owned(),

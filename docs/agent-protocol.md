@@ -530,11 +530,14 @@ Not signed. `200` with the plain-text body `ok`.
 Not signed (the tailnet policy still decides who can reach it). `200`:
 
 ```json
-{"protocols":["warden-request-v1"],"audience":"40ad20029e94984d193159667b296d8a"}
+{"protocols":["warden-request-v1"],"audience":"40ad20029e94984d193159667b296d8a","github_token_max_window":"30d"}
 ```
 
 `protocols` lists the signing protocols the broker accepts; `audience` is
-the value to pin (section 2).
+the value to pin (section 2). `github_token_max_window` is the longest GitHub token grant
+the broker allows (`1d`, `7d` or `30d`, from `WARDEN_GITHUB_TOKEN_MAX_WINDOW`): a request
+for a longer one is refused. Brokers older than GitHub tokens leave it out; ignore any
+field you do not know.
 
 ### `POST /v1/requests`
 
@@ -832,6 +835,10 @@ field is refused.
 - `409` `{"error":"grant revoked during the call"}` or `{"error":"grant expired during the
   call"}`: the grant ended while the token was being minted, or was replaced by a new
   one. The token is not given out; ask again under the new grant.
+- `429` `{"error":"this agent has reached its limit of GitHub tokens for this hour; it starts
+  again at the top of the hour"}`: the agent has had 60 tokens since the top of the hour
+  (UTC). GitHub is not asked. A token lasts an hour, so keep it and ask again only when it is
+  about to end, as the CLI does.
 - `503` `{"error":"GitHub could not issue a token; try again later"}`, or `{"error":"secret
   backend unavailable"}`. Nothing GitHub said is passed on.
 - `500`: no token, as with an entry that cannot be written to the audit log.

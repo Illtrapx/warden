@@ -254,6 +254,7 @@ async fn info(State(state): State<AppState>) -> Json<InfoResponse> {
     Json(InfoResponse {
         protocols: vec![signing::PROTOCOL.to_owned()],
         audience: state.audience,
+        github_token_max_window: Some(state.requests.github_token_max()),
     })
 }
 

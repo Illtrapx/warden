@@ -93,6 +93,7 @@ struct Limits {
     commit_signing_max: Window,
     commit_signing_per_day: u32,
     github_token_max: Window,
+    github_token_per_hour: u32,
     github_api: GithubApi,
 }
 
@@ -105,6 +106,7 @@ impl Default for Limits {
             commit_signing_max: Window::COMMIT_SIGNING_DEFAULT,
             commit_signing_per_day: crate::requests::SIGNATURES_PER_DAY,
             github_token_max: Window::GITHUB_TOKEN_DEFAULT,
+            github_token_per_hour: crate::requests::MINTS_PER_HOUR,
             github_api: GithubApi::public(),
             link_hosts: LinkHosts::default(),
         }
@@ -299,6 +301,29 @@ impl TestBroker {
         .await
     }
 
+    /// Like [`TestBroker::new`], minting GitHub tokens at `github_api`, with
+    /// `WARDEN_GITHUB_TOKEN_MAX_WINDOW` at `github_token_max` and `per_hour` tokens
+    /// per agent per hour.
+    ///
+    /// # Panics
+    /// If any part of the setup fails.
+    pub async fn with_github(
+        github_api: GithubApi,
+        github_token_max: Window,
+        per_hour: u32,
+    ) -> Self {
+        Self::fresh(
+            Limits {
+                github_api,
+                github_token_max,
+                github_token_per_hour: per_hour,
+                ..Limits::default()
+            },
+            Some(format!("{RELAY_PUBLIC_HOST}:{RELAY_PUBLIC_PORT}")),
+        )
+        .await
+    }
+
     /// Like [`TestBroker::new`], with `WARDEN_COMMIT_SIGNING_MAX_PER_DAY` at this.
     ///
     /// # Panics
@@ -471,6 +496,7 @@ impl TestBroker {
         .with_commit_signing_max(limits.commit_signing_max)
         .with_commit_signing_per_day(limits.commit_signing_per_day)
         .with_github_token_max(limits.github_token_max)
+        .with_github_token_per_hour(limits.github_token_per_hour)
         .with_link_hosts(limits.link_hosts.clone())
         .with_call_limits(config.proxy.max_calls_per_agent, config.proxy.max_calls);
         let passkeys = Passkeys::new(

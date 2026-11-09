@@ -51,8 +51,9 @@ each refusal, never the token. See [the threat model](threat-model.md#github-tok
 
 ## Create the App
 
-Create one App for all your agents, or one per trust level. The App is yours, on your account
-or organization.
+Create one App per broker: the broker reads exactly one App, and treats more than one
+`warden:github-app` item as an error. Agents that need another trust level need their own
+broker. The App is yours, on your account or organization.
 
 1. On GitHub, **Settings**, **Developer settings**, **GitHub Apps**, **New GitHub App**.
 2. Give it a name that says what it is, such as `warden agents`, and any homepage URL.

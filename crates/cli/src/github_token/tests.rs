@@ -249,6 +249,12 @@ fn failures_say_what_to_do_and_never_how_to_get_around_the_owner() {
     ));
     assert_eq!(code, EXIT_ERROR);
     assert!(message.contains("warden doctor"), "{message}");
+    let (code, message) = exit_of(CallError::Refused(format!(
+        "broker refused (429 Too Many Requests): {}",
+        warden_broker_proto::github_token::HOURLY_LIMIT
+    )));
+    assert_eq!(code, EXIT_ERROR);
+    assert!(message.contains("do not retry"), "{message}");
     let (code, _) = exit_of(CallError::Refused(
         "broker refused (400 Bad Request): GitHub tokens are not configured on this broker"
             .to_owned(),

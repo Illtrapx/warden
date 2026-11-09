@@ -157,10 +157,17 @@ fn parse_rsa_key(pem: &[u8]) -> Result<KeyPair, PolicyError> {
 pub(super) fn parse_item(title: &str, fields: &[SecretField]) -> Result<GithubAppKey, PolicyError> {
     let mut by_label: HashMap<&str, &str> = HashMap::new();
     for field in fields {
-        let (Some(label), Some(value)) = (field.label.as_deref(), field.value.as_deref()) else {
+        let Some(label) = field
+            .label
+            .as_deref()
+            .filter(|label| LABELS.contains(label))
+        else {
             continue;
         };
-        if LABELS.contains(&label) && by_label.insert(label, value.as_str()).is_some() {
+        // A repeated label is refused whether or not either has a value: which one
+        // was meant cannot be told.
+        let value = field.value.as_deref().map_or("", |value| value.as_str());
+        if by_label.insert(label, value).is_some() {
             return Err(PolicyError::GithubApp(format!(
                 "item \"{title}\": field \"{label}\" appears more than once"
             )));
@@ -282,7 +289,7 @@ mod tests {
     use crate::policy::PolicyError;
     use crate::testkit::github_app::{
         APP_ID, EC_P256_PKCS8, ED25519_PKCS8, INSTALLATION_ID, RSA1024_PKCS8, RSA2048_ENCRYPTED,
-        RSA2048_PKCS1, RSA2048_PKCS8, RSA2048_PUBLIC_DER,
+        RSA2048_ENCRYPTED_PKCS1, RSA2048_PKCS1, RSA2048_PKCS8, RSA2048_PUBLIC_DER,
     };
 
     fn load(pem: &[u8]) -> Result<GithubAppKey, PolicyError> {
@@ -311,6 +318,19 @@ mod tests {
         ] {
             let err = load(pem).unwrap_err();
             assert!(matches!(err, PolicyError::GithubApp(_)), "{what}: {err:?}");
+        }
+    }
+
+    #[test]
+    fn github_app_key_says_an_encrypted_key_is_passphrase_protected() {
+        for (what, pem) in [
+            ("pkcs8", RSA2048_ENCRYPTED),
+            ("legacy pkcs1", RSA2048_ENCRYPTED_PKCS1),
+        ] {
+            let Err(PolicyError::GithubApp(reason)) = load(pem) else {
+                panic!("{what}: not refused as a GitHub App error");
+            };
+            assert!(reason.contains("passphrase-protected"), "{what}: {reason}");
         }
     }
 

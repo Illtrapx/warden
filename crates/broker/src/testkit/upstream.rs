@@ -64,6 +64,8 @@ pub struct Scripted {
     pub body: Vec<u8>,
     /// When set, the response is held back until the gate opens.
     pub gate: Option<Gate>,
+    /// Whether the body goes in 1 KiB chunks, with no `Content-Length`.
+    pub chunked: bool,
 }
 
 impl Scripted {
@@ -75,6 +77,7 @@ impl Scripted {
             headers: Vec::new(),
             body: Vec::new(),
             gate: None,
+            chunked: false,
         }
     }
 
@@ -91,6 +94,13 @@ impl Scripted {
     #[must_use]
     pub fn header(mut self, name: &str, value: &str) -> Self {
         self.headers.push((name.to_owned(), value.to_owned()));
+        self
+    }
+
+    /// Send the body in 1 KiB chunks, with no `Content-Length`.
+    #[must_use]
+    pub const fn chunked(mut self) -> Self {
+        self.chunked = true;
         self
     }
 
@@ -473,7 +483,12 @@ async fn github_token(shared: &Shared) -> Response {
         // The sender lives in the gate this response holds, so this cannot fail.
         let _ = gate.subscribe().wait_for(|open| *open).await;
     }
-    let mut response = Response::new(Body::from(scripted.body));
+    let body = if scripted.chunked {
+        in_chunks(scripted.body)
+    } else {
+        Body::from(scripted.body)
+    };
+    let mut response = Response::new(body);
     *response.status_mut() = StatusCode::from_u16(scripted.status).expect("scripted status");
     for (name, value) in &scripted.headers {
         response.headers_mut().append(
@@ -602,6 +617,19 @@ fn redirect(headers: &HeaderMap) -> Response {
 }
 
 /// [`HUGE_BYTES`] in 64 KiB chunks, with no `Content-Length`.
+/// `body` in 1 KiB chunks, so that its length is not known up front.
+fn in_chunks(body: Vec<u8>) -> Body {
+    let (mut tx, stream) = Channel::<Bytes>::new(1);
+    tokio::spawn(async move {
+        for chunk in body.chunks(1024) {
+            if tx.send_data(Bytes::copy_from_slice(chunk)).await.is_err() {
+                return;
+            }
+        }
+    });
+    Body::new(stream)
+}
+
 fn huge_chunked() -> Body {
     let (mut tx, body) = Channel::<Bytes>::new(1);
     tokio::spawn(async move {

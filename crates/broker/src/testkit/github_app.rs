@@ -16,6 +16,10 @@ pub const RSA2048_PKCS8: &[u8] = include_bytes!("github_app/throwaway-test-only-
 /// The same key, encrypted with a passphrase, as PKCS#8 PEM.
 pub const RSA2048_ENCRYPTED: &[u8] =
     include_bytes!("github_app/throwaway-test-only-rsa2048-encrypted-pkcs8.pem");
+/// Another 2048-bit RSA key, encrypted the legacy way: PKCS#1 PEM with
+/// `Proc-Type: 4,ENCRYPTED`.
+pub const RSA2048_ENCRYPTED_PKCS1: &[u8] =
+    include_bytes!("github_app/throwaway-test-only-rsa2048-encrypted-pkcs1.pem");
 /// A 1024-bit RSA key, too short to accept.
 pub const RSA1024_PKCS8: &[u8] = include_bytes!("github_app/throwaway-test-only-rsa1024-pkcs8.pem");
 /// An ECDSA P-256 key.

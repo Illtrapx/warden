@@ -94,6 +94,22 @@ async fn window_above_server_max_refused() {
 }
 
 #[tokio::test]
+async fn info_publishes_the_server_max() {
+    for max in Window::GITHUB_TOKEN {
+        let broker = TestBroker::with_github_token_max(max).await;
+        let info = broker
+            .api_send(
+                axum::http::Request::get("/v1/info")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await;
+        assert_eq!(info.status, StatusCode::OK, "{}", info.body);
+        assert_eq!(info.json()["github_token_max_window"], max.label());
+    }
+}
+
+#[tokio::test]
 async fn a_grant_lasts_exactly_the_window_approved() {
     let (broker, key) = configured(TestBroker::new().await).await;
     let grant = approve(&broker, "bot", Window::D30).await;

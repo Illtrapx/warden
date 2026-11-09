@@ -916,8 +916,11 @@ What an attacker gets, and what stops it:
   read. Neither the agent nor the owner chooses them at approval, and the broker sends
   exactly these to GitHub whatever the App is allowed. No `workflows`, so GitHub refuses a push
   that changes a workflow file, and no `administration`.
-- **Within a grant, the agent gets as many tokens as it likes**, with no prompt. A
-  prompt-injected agent gets them too, and what a token can do includes pushing branches,
+- **Within a grant, the agent gets tokens with no prompt**, up to 60 an hour (UTC): far more
+  than the CLI, which keeps each token for its hour, needs, and few enough that a looping
+  agent cannot use up the App's rate limit at GitHub, which every agent shares, or fill the
+  audit log. A refused mint does not reach GitHub and is audited as `github_token_refused`.
+  A prompt-injected agent gets tokens too, and what a token can do includes pushing branches,
   opening pull requests and editing issues. Pushes to a protected default branch are stopped
   by the repository's rules on GitHub, and not by warden. A repository whose content runs as
   the owner must not allow more than pull requests, and a pull request there is code to read.

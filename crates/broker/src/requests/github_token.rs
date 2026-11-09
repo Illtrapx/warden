@@ -20,6 +20,13 @@ pub struct ActiveGithubToken {
     pub grant: GithubTokenGrant,
 }
 
+/// Tokens per agent per hour, unless a test says otherwise. An agent holds at most one
+/// GitHub token grant, so this counts that grant's mints. The CLI caches a token for
+/// most of its hour, so it mints about once an hour; this is far more, and small
+/// enough that a looping agent cannot use up the App's rate limit at GitHub, which
+/// every agent shares, or fill the audit log.
+pub const MINTS_PER_HOUR: u32 = 60;
+
 /// Whether a GitHub token grant may have `window`, under the server's `max`.
 pub(super) fn check_window(window: Window, max: Window) -> Result<(), String> {
     if !window.is_github_token() {
@@ -34,6 +41,35 @@ impl Requests {
     pub const fn with_github_token_max(mut self, max: Window) -> Self {
         self.github_token_max = max;
         self
+    }
+
+    /// Allow each agent `limit` GitHub tokens per hour, instead of
+    /// [`MINTS_PER_HOUR`].
+    #[must_use]
+    pub const fn with_github_token_per_hour(mut self, limit: u32) -> Self {
+        self.github_token_per_hour = limit;
+        self
+    }
+
+    /// Take one of `grant`'s tokens for this hour, or say there are none left. In one
+    /// statement, so that concurrent calls cannot pass the limit, and in the database,
+    /// so that a restart does not reset it.
+    ///
+    /// # Errors
+    /// Storage failures: the caller refuses.
+    pub(crate) async fn take_mint(&self, grant: &Id) -> Result<bool, RequestError> {
+        let taken = sqlx::query(
+            "UPDATE grants SET mint_hour = ?1, mint_count = \
+             CASE WHEN mint_hour = ?1 THEN mint_count + 1 ELSE 1 END \
+             WHERE id = ?2 AND (mint_hour IS NOT ?1 OR mint_count < ?3)",
+        )
+        .bind(self.clock.now().div_euclid(3600))
+        .bind(grant.as_str())
+        .bind(self.github_token_per_hour)
+        .execute(&self.pool)
+        .await?
+        .rows_affected();
+        Ok(taken > 0)
     }
 
     /// The longest GitHub token grant the server allows.

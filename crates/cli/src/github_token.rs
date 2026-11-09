@@ -20,7 +20,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context as _, Result, anyhow};
 use serde::{Deserialize, Serialize};
 use warden_broker_proto::github_token::{
-    APP_CHANGED, GithubTokenResponse, NO_ACTIVE_GRANT, NOT_CONFIGURED,
+    APP_CHANGED, GithubTokenResponse, HOURLY_LIMIT, NO_ACTIVE_GRANT, NOT_CONFIGURED,
 };
 use warden_broker_proto::{Goal, Id};
 use zeroize::Zeroizing;
@@ -347,6 +347,13 @@ fn explain(e: anyhow::Error) -> anyhow::Error {
             format!(
                 "cannot get a GitHub token: {m}. Ask the owner for a new grant with: warden \
                  request github --goal \"<why this agent uses GitHub>\""
+            ),
+        ),
+        CallError::Refused(m) if m.contains(HOURLY_LIMIT) => (
+            EXIT_ERROR,
+            format!(
+                "cannot get a GitHub token: {m}. Something is asking for far more tokens than git \
+                 and gh need: do not retry in a loop; if it goes on, tell the owner"
             ),
         ),
         CallError::Refused(m) if m.contains(NOT_CONFIGURED) => (

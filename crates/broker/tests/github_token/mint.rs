@@ -13,7 +13,7 @@ use warden_broker::testkit::github_app::{APP_ID, INSTALLATION_ID, RSA2048_PKCS8}
 use warden_broker::testkit::upstream::{Gate, HttpsUpstream, Scripted};
 use warden_broker::testkit::{TestBroker, TestResponse};
 use warden_broker_proto::Window;
-use warden_broker_proto::github_token::NO_ACTIVE_GRANT;
+use warden_broker_proto::github_token::{HOURLY_LIMIT, NO_ACTIVE_GRANT};
 
 use super::{approve, configured, entries};
 
@@ -75,6 +75,37 @@ async fn held_mint(
     });
     upstream.wait_for_github_token_calls(1).await;
     (gate, call)
+}
+
+#[tokio::test]
+async fn mints_are_capped_per_agent_per_hour() {
+    let upstream = HttpsUpstream::start().await;
+    let api = GithubApi::pinned(
+        upstream.origin().parse().unwrap(),
+        upstream.ca_pem().as_bytes().to_vec(),
+    );
+    let (broker, key) = configured(TestBroker::with_github(api, Window::D30, 2).await).await;
+    approve(&broker, "bot", Window::D30).await;
+    for _ in 0..2 {
+        upstream.script_github_token(created(&broker, TOKEN));
+        let resp = mint(&broker, &key).await;
+        assert_eq!(resp.status, StatusCode::OK, "{}", resp.body);
+    }
+    let resp = mint(&broker, &key).await;
+    assert_refused(&broker, &resp, StatusCode::TOO_MANY_REQUESTS, HOURLY_LIMIT);
+    assert_eq!(
+        upstream.received().len(),
+        2,
+        "a refused mint costs GitHub nothing"
+    );
+    assert_eq!(entries(&broker, "github_token_minted").len(), 2);
+
+    // The next hour starts afresh.
+    let now = broker.clock.now();
+    broker.clock.advance(3600 - now.rem_euclid(3600));
+    upstream.script_github_token(created(&broker, TOKEN));
+    let resp = mint(&broker, &key).await;
+    assert_eq!(resp.status, StatusCode::OK, "{}", resp.body);
 }
 
 async fn revoke(broker: &TestBroker, grant: &str) {

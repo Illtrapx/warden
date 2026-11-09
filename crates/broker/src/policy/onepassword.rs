@@ -25,7 +25,7 @@ const CA_TAG: &str = "warden:ssh-ca";
 /// signing key would be another one: see `crate::commit_signing`.
 const COMMIT_SIGNING_TAG: &str = "warden:commit-signing";
 /// Tag of the item holding the GitHub App: its `app_id`, `installation_id` and
-/// `private_key` fields, by id.
+/// `private_key` fields, by label.
 const GITHUB_APP_TAG: &str = "warden:github-app";
 const API_TAG: &str = "warden:api-secret";
 const MIN_CREDENTIAL_CHARS: usize = 12;
