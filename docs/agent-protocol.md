@@ -544,7 +544,7 @@ Ask the owner for access. Signed; JSON body:
 |-------|------|---------|
 | `goal` | string | Why access is needed: what you will do and why, naming the change, issue or error. 1 to 500 characters after trimming whitespace, one line: no control characters and no invisible format characters (Unicode category Cf: bidi controls, zero-width characters, BOM, soft hyphen…). The owner decides on it alone; the notification shows the first 200 characters. |
 | `access` | object | What is asked for; see below. |
-| `window` | string | How long the access should last: `15m`, `30m`, `1h` or `4h`, and for commit signing, and nothing else, `1d`, `7d`, `30d` or `90d`. The target's or secret's policy caps it, and for commit signing the server's `WARDEN_COMMIT_SIGNING_MAX_WINDOW`. The owner chooses the window when approving, anything up to that cap, so it may be shorter or longer than the one asked for. |
+| `window` | string | How long the access should last: `15m`, `30m`, `1h` or `4h`, for commit signing, and nothing else, `1d`, `7d`, `30d` or `90d`, and for GitHub tokens, and nothing else, `1d`, `7d` or `30d`. The target's or secret's policy caps it, for commit signing the server's `WARDEN_COMMIT_SIGNING_MAX_WINDOW`, and for GitHub tokens `WARDEN_GITHUB_TOKEN_MAX_WINDOW`. The owner chooses the window when approving, anything up to that cap, so it may be shorter or longer than the one asked for. |
 | `session` | string, optional | The name the session states for itself, shown to the owner as the agent's claim, and written to the notification and the audit log. 1 to 64 characters after trimming whitespace, under the rules of `goal`, and no line or paragraph separators. |
 | `link` | string, optional | A page about this work, shown to the owner as the agent's claim, and in no notification and no audit entry. `https://<host>/<path>`, at most 256 bytes: lowercase `https://`, a host name of letters, digits, dots and hyphens (no user, password, port, IP address or percent-encoding; an international name as `xn--…`), and a path of printable ASCII without a backslash, a query or a fragment. A `400` otherwise, without quoting the value, and also if the host is not in the owner's [`WARDEN_REQUEST_LINK_HOSTS`](configuration.md#links-in-requests), which is empty by default. It is stored and hashed in its normal form: the host in lowercase, a path of at least `/`, dot segments resolved, and characters such as `<` percent-encoded. |
 
@@ -689,8 +689,8 @@ not a client is still waiting. To take over from a client that died:
 
 What the grant needs depends on its kind:
 
-- `api` and `commit_signing`: nothing but the agent's own signature or key. The new
-  client can use it.
+- `api`, `commit_signing` and `github_token`: nothing but the agent's own signature or key.
+  The new client can use it.
 - `ssh` and `relay`: the private half of the `public_key` in the request. The
   certificate is for that key, and the relay admits only that key. A client that
   keeps the key where it survives a crash can complete the request. A client that
@@ -837,7 +837,9 @@ field is refused.
 - `500`: no token, as with an entry that cannot be written to the audit log.
 
 The broker records each token it mints (grant, installation, permissions and expiry, never
-the token) before returning it, and each refusal with a fixed reason.
+the token) before returning it, and each refusal with a fixed reason. Beyond 30 refusals a
+minute per agent they are counted, as for commit signing. A token already returned is not
+recalled when its grant ends: it works until `expires_at`.
 
 ## 7. Using a grant
 
@@ -1020,6 +1022,29 @@ the payload: its SHA-256 only. Beyond 30 refusals a minute per agent, they are c
 
 `warden` is a client of this: [Signing commits](agent-usage.md#signing-commits). Git runs it
 as `warden -Y sign -n git -f <public key> [-U] <file>` and reads `<file>.sig`.
+
+### GitHub token grants (`"kind":"github_token"`)
+
+Asked for with `{"kind":"github_token"}` as `access` and a `window` of `1d`, `7d` or `30d`:
+
+```json
+{"grant_id":"5e1c…","not_before":1793091612,"not_after":1795683612,"access":{"kind":"github_token","app_id":"123456","installation_id":7890123,"digest":"…"}}
+```
+
+The request is refused with a `400` when the broker holds no GitHub App
+(`GitHub tokens are not configured on this broker`), and for a window outside the three.
+There is nothing to install and the grant id is not needed: `POST /v1/github-token` uses the
+agent's own active grant, read anew for each token. An agent has one at a time: approving a
+new one ends the one before it, whose `not_after` stops counting. Minting is refused with a
+`409` once the broker's App or installation is no longer the one with this `digest`.
+
+The token covers every repository the App's installation covers, with `contents`,
+`pull_requests` and `issues` write and `metadata` read. A client chooses neither repositories
+nor permissions. Unlike the other kinds, this grant gives the agent a credential that outlives
+the grant: tokens last an hour, and revoking does not recall one. A client should keep the
+token only in memory or in a file only its user can read, mint another when less than 5
+minutes of it remain, and never log it. `warden` is a client of this:
+[GitHub tokens](agent-usage.md#github-tokens). Git runs it as `warden git-credential get`.
 
 ## 8. A worked client in POSIX shell
 

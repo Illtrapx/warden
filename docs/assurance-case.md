@@ -37,7 +37,7 @@ its guarantees hold only under the
 | R1 | No access without the owner's passkey. An agent can only ask. | [`approve_finish`](../crates/broker/src/approval/mod.rs) issues a grant only after [`finish_approval`](../crates/broker/src/approval/passkeys.rs) verifies the assertion, with user verification required. |
 | R2 | An approval applies to the one request and window the owner saw. | [`ApprovalBinding`](../crates/broker/src/approval/passkeys.rs), checked again in `approve_finish`. See [how it binds](threat-model.md#approval-binding), and its limit below. |
 | R3 | Access is bounded in time and scope, and the agent cannot widen it. On a certificate target the time bound applies to new logins only: [an open login outlives the certificate](threat-model.md#accepted-residual-risks). | `check_policy` in [`approval/mod.rs`](../crates/broker/src/approval/mod.rs); [`ssh_ca::issue`](../crates/broker/src/ssh_ca.rs); [`proxy/rules.rs`](../crates/broker/src/proxy/rules.rs); `scope` in [`policy/api.rs`](../crates/broker/src/policy/api.rs). |
-| R4 | The agent never receives a reusable secret: no CA key, API secret or relay credential. It keeps only its own identity key, which can ask and use active grants, and [can be copied](security-assessment.md#ranked-risks) unless held in hardware. | Grant types in [`proto/src/grant.rs`](../crates/proto/src/grant.rs) carry no secret field. [`proxy/client.rs`](../crates/broker/src/proxy/client.rs) adds the secret itself and [`proxy/redact.rs`](../crates/broker/src/proxy/redact.rs) redacts answers. |
+| R4 | The agent never receives a reusable secret: no CA key, API secret, relay credential, signing key or GitHub App key. It keeps only its own identity key, which can ask and use active grants, and [can be copied](security-assessment.md#ranked-risks) unless held in hardware. **The one exception is a GitHub token**: a bearer secret the agent holds for an hour, that revoking does not recall ([threat model](threat-model.md#github-tokens)). | Grant types in [`proto/src/grant.rs`](../crates/proto/src/grant.rs) carry no secret field. The token is returned only by `POST /v1/github-token` ([`api/github_token.rs`](../crates/broker/src/api/github_token.rs)), under an active grant. [`proxy/client.rs`](../crates/broker/src/proxy/client.rs) adds the secret itself and [`proxy/redact.rs`](../crates/broker/src/proxy/redact.rs) redacts answers. |
 | R5 | A secret reaches only the place the owner configured. | Exact origin match in `check_url` ([`proxy/rules.rs`](../crates/broker/src/proxy/rules.rs)); no redirects and no proxy in `client_for` ([`proxy/client.rs`](../crates/broker/src/proxy/client.rs)); pinned host keys in `check_server_key` ([`relay/onward.rs`](../crates/broker/src/relay/onward.rs)). |
 | R6 | Secrets are not logged, audited, sent to notifiers or put in errors. | `Debug` of secret types prints `<redacted>` ([`policy/mod.rs`](../crates/broker/src/policy/mod.rs), [`agents.rs`](../crates/broker/src/agents.rs), [`config.rs`](../crates/broker/src/config.rs)); fixed upstream errors in `ProxyError` ([`proxy/client.rs`](../crates/broker/src/proxy/client.rs)); the `Scrubber` in [`doctor/mod.rs`](../crates/broker/src/doctor/mod.rs). |
 | R7 | Every request, decision and grant is recorded, and every use that passes through warden: relay sessions and proxied calls. A change to the record can be detected unless the whole file is rewritten. **warden does not see certificate logins** (B9 below): it records the issue, and only the target's `sshd` logs the login. | [`audit.rs`](../crates/broker/src/audit.rs) (hash chain), `record` in [`requests/transition.rs`](../crates/broker/src/requests/transition.rs). Exceptions: finding [F15](security-assessment.md#findings-of-this-review), and revocation, which [does not wait for the log](threat-model.md#what-the-audit-log-can-miss) ([`requests/revocation.rs`](../crates/broker/src/requests/revocation.rs)). |
@@ -81,6 +81,7 @@ trusted, but it is weaker than a signature over the request itself.
 | **B7** Broker to API origin | The real secret, the agent's call; the answer | The origin's answer, the agent's call | Rules checked before sending; verified TLS; compressed answers refused; size and time limits; redaction | [`proxy/`](../crates/broker/src/proxy/mod.rs) |
 | **B8** Broker to relay target | The onward login | The target, until its pinned key is proven | Host key checked before the credential is sent; only pinned algorithms; channels opened by the target are refused | [`relay/onward.rs`](../crates/broker/src/relay/onward.rs) |
 | **B9** Agent to certificate target | A certificate limited to one principal | warden is not on this path | The target's `sshd` decides, using the [principal mapping](threat-model.md#deployment-assumptions); warden sees no logins and cannot end one | [`ssh_ca.rs`](../crates/broker/src/ssh_ca.rs), [`cli/src/ssh.rs`](../crates/cli/src/ssh.rs) |
+| **B10** Broker to GitHub | The App's JWT out; an installation token back | GitHub's answer | Fixed host, verified TLS, redirects off, answers of at most 64 KiB, and nothing GitHub said passed on to the agent; the JWT lives 9 minutes and the key signs only through `aws-lc-rs` | [`github_app.rs`](../crates/broker/src/github_app.rs), [`api/github_token.rs`](../crates/broker/src/api/github_token.rs) |
 
 Two more lines matter:
 
@@ -234,6 +235,7 @@ the signed data to `p256`, and the CLI has its own small `ssh-agent` client
 | SSH CA and certificates | Ed25519, refused otherwise | about 128 bits | `ssh-key` | `CaKey::new` in [`policy/mod.rs`](../crates/broker/src/policy/mod.rs) |
 | Ephemeral agent keys | Ed25519, refused otherwise | about 128 bits | `ssh-key` | `check_ed25519` in [`requests.rs`](../crates/broker/src/requests.rs) |
 | Agent request signatures | SSHSIG with Ed25519 or ECDSA P-256; hash SHA-512 or SHA-256 | about 128 bits | `ssh-key` for Ed25519, `p256` for P-256 | `check_signature` and `sshsig_verifies` in [`signed.rs`](../crates/broker/src/signed.rs) |
+| GitHub App's JWT | RSASSA-PKCS1-v1_5 with SHA-256 (`RS256`), signed with an unencrypted RSA key of at least 2048 bits, PKCS#1 or PKCS#8; refused otherwise | about 112 bits at 2048 bits | `aws-lc-rs` | `GithubAppKey` in [`policy/github_app.rs`](../crates/broker/src/policy/github_app.rs); `mint` in [`github_app.rs`](../crates/broker/src/github_app.rs) |
 | Relay host key | Ed25519 | about 128 bits | `ssh-key`, `russh` | [`relay/host_key.rs`](../crates/broker/src/relay/host_key.rs) |
 | Relay target login key | Ed25519, refused otherwise | about 128 bits | `ssh-key`, `russh` | `RelayCredential` in [`policy/mod.rs`](../crates/broker/src/policy/mod.rs) |
 | Pinned target host keys | Ed25519, ECDSA P-256, P-384 or P-521, or RSA; verified only | at least 128 bits for the elliptic curves; for RSA, what the operator pinned ([below](#key-lengths)) | `russh`, `ssh-key` | `host_key_algorithms` in [`relay/onward.rs`](../crates/broker/src/relay/onward.rs) |
@@ -275,8 +277,9 @@ Exceptions you should know about:
   never used.
 - **A known advisory in the dependency tree.** `deny.toml` carries one exemption:
   RUSTSEC-2023-0071, a timing attack on RSA private-key operations, in the `rsa`
-  pre-release that `russh` pins. warden holds no RSA private key, and that code
-  runs only in the broker, to verify the pinned host keys of targets.
+  pre-release that `russh` pins. warden holds one RSA private key, the GitHub App's,
+  and signs with it only through `aws-lc-rs`: that `rsa` code is never given a private
+  key, and runs only in the broker, to verify the pinned host keys of targets.
 - **Certificate targets.** The login between the agent's `ssh` and the target is
   OpenSSH on both sides, and their settings decide its algorithms.
 
@@ -284,8 +287,9 @@ Exceptions you should know about:
 
 `crypto_keylength`. Every key warden generates or requires by default meets the
 NIST minimum through 2030 (112 bits of security): see "Strength" above. The keys
-warden holds are Ed25519, and other types are refused rather than warned about.
-RSA keys appear only as pinned host keys of targets. **warden does not check their
+warden holds are Ed25519, and other types are refused rather than warned about, with one
+exception: the GitHub App's key, which GitHub makes RSA, and which warden refuses below 2048
+bits. Otherwise RSA keys appear only as pinned host keys of targets. **warden does not check their
 length**, and we found no such check in the libraries it reads with: `ssh-key` 0.6
 parses the item's key without one, and the conversion in `ssh-key` 0.7.0-rc.11, used
 for verifying, has none. So the operator can pin an RSA key that is too short, and must not: pin
@@ -335,6 +339,7 @@ a live deployment**. Try one before you need it.
 | Credential | Where it lives | How to replace it | What happens to what exists |
 |---|---|---|---|
 | **SSH CA key** | 1Password item tagged `warden:ssh-ca` | [Below](#the-ssh-ca-key) | Read at each approval, so no restart. |
+| **GitHub App's private key** | The 1Password item tagged `warden:github-app` | Add a key to the App on GitHub, replace `private_key` in the item, then delete the old key on GitHub. | Read for each mint, so no restart. Grants stay: the key is not part of the destination digest. Tokens already minted last until GitHub ends them, at most an hour. Changing the App id or installation ends every grant. |
 | **API secret** | Its 1Password item | Change the value in the item. | The next call uses it: the value is not part of the destination digest. Changing the origin, prefix, methods, header, format or CA invalidates the grants. |
 | **Relay target's key or password** | Its 1Password item | Change it on the target and in the item. | The next session uses it. Open sessions are unaffected. |
 | **Target host keys** | Its 1Password item | Change `host_keys`. | Part of the destination digest: open grants stop working and the agent asks again. |

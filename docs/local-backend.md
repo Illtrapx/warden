@@ -217,6 +217,12 @@ ssh-keygen -t ed25519 -N '' -C warden-commit-signing -f /var/lib/warden/secrets/
 Register the `.pub` file as a signing key on the account that commits. See
 [signing commits](threat-model.md#commit-signing).
 
+### GitHub tokens
+
+The local backend cannot hold the [GitHub App](github-app.md) for agents: there is no
+section for it, and GitHub tokens are off. Requests for them are refused, and `doctor` says
+GitHub tokens need the 1Password backend.
+
 ## The secret files
 
 Each secret is a file of its own in `WARDEN_LOCAL_SECRETS_DIR`, named in the policy

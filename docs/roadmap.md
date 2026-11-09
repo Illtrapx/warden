@@ -43,7 +43,8 @@ machine.
 - [#81](https://github.com/pecheriere/warden/issues/81) Commit signing through
   warden, with limits per grant
 - [#82](https://github.com/pecheriere/warden/issues/82) Use `gh` through warden
-  without giving agents a token
+  without giving agents a token. [#185](https://github.com/pecheriere/warden/issues/185)
+  adds hour-long [GitHub App tokens](github-app.md) instead, which agents do hold
 
 ## Tighter grants and clearer approvals
 
