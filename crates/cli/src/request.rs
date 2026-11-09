@@ -521,7 +521,7 @@ fn answered_is_ours(
         }
         Answered::Other => {
             eprintln!(
-                "warden: a request {subject} made elsewhere is already pending (id {}); waiting \
+                "warden: a matching request made elsewhere is already pending (id {}); waiting \
                  on it instead. It is not this command's, so Ctrl-C leaves it pending",
                 created.id
             );
