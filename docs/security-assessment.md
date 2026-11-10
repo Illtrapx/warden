@@ -1,6 +1,6 @@
 # Security assessment
 
-**Date: 2026-11-08: risks 1, 2, 9 and 13 updated for GitHub tokens for agents, which are not in a release yet, and risk 12 updated for the Homebrew tap. Otherwise covers release 0.10.0, reviewed at `main` commit `a9249d5`. The
+**Date: 2026-11-09: GitHub tokens checked against real GitHub (F21, F22, and F20's last sentence). 2026-11-08: risks 1, 2, 9 and 13 updated for GitHub tokens for agents, which are not in a release yet, and risk 12 updated for the Homebrew tap. Otherwise covers release 0.10.0, reviewed at `main` commit `a9249d5`. The
 review for this release checked the ranked risks and findings against the changes
 since 0.9.0; it did not repeat the full reading of the documents against the code.**
 
@@ -76,7 +76,9 @@ decision by the maintainer, and stay open until then.
 | F17 | **The Pending page lets the owner's login do more without a passkey.** Found in review of [#145](https://github.com/pecheriere/warden/pull/145). With that login alone, someone can see pending requests, deny them, and keep replacing a request's approval link, so every page the owner opens fails before the passkey finishes. Where an agent has browser tools next to a usable passkey, the login can also raise a real prompt, and only the owner's attention stops it. | [Documented in the threat model](threat-model.md). It still takes a passkey to approve, and passkey prompts are limited per request. See risk 3. Not tested on a real phone. |
 | F18 | **Commit signing had not reached this page or the design.** [#153](https://github.com/pecheriere/warden/pull/153) documented it in the threat model, but the ranked risks still said no grant lasts past 4 hours, and the design listed only the three access modes. | Corrected in the 0.10.0 review: risks 1, 2, 9, 12 and 13, and the design's opening. |
 | F19 | **The CLI's `.deb` and `.rpm` had not reached the threat model.** [#165](https://github.com/pecheriere/warden/pull/165) documented them in the usage and verification guides only. | Corrected in the 0.10.0 review: [the threat model](threat-model.md) says what covers them. |
-| F20 | **GitHub tokens break the rule that an agent never holds a credential**, which this page, the README and the assurance case relied on. The token is a bearer secret for an hour, covers every repository of the App's installation, and a revoked grant does not recall it. | Documented in [the threat model](threat-model.md#github-tokens) and [GitHub tokens for agents](github-app.md), and risks 1, 2 and 9 changed. The owner's setup on GitHub, not warden, bounds what a token can do. Not tested against real GitHub. |
+| F20 | **GitHub tokens break the rule that an agent never holds a credential**, which this page, the README and the assurance case relied on. The token is a bearer secret for an hour, covers every repository of the App's installation, and a revoked grant does not recall it. | Documented in [the threat model](threat-model.md#github-tokens) and [GitHub tokens for agents](github-app.md), and risks 1, 2 and 9 changed. The owner's setup on GitHub, not warden, bounds what a token can do. Checked against real GitHub on 2026-11-09: see F21 and F22. |
+| F21 | **The deployment guide's egress rules left out `api.github.com`.** Found on 2026-11-09 by the first mint against real GitHub, from a broker whose egress was locked as the guide says: every mint failed with `503`. | Corrected: [the deployment guide](deployment.md#lock-wardens-egress) and [GitHub tokens for agents](github-app.md) say the broker needs it. |
+| F22 | **A token can post on public repositories the App is not installed on.** Found on 2026-11-09: a token opened an issue on a public repository of the App owner's account outside the installation, since that takes only read access and an installation token can read public repositories. Other accounts' repositories were not tried. The documents said a token covers the installation's repositories. | Documented in [the threat model](threat-model.md#github-tokens) and [GitHub tokens for agents](github-app.md#what-an-agent-gets). warden cannot narrow it. |
 
 ## What this assessment did not do
 
@@ -97,7 +99,11 @@ decision by the maintainer, and stay open until then.
   name resolution on a tailnet. The commit signing, label, link, pending list and
   fingerprint changes were checked against their threat model sections and tests, not
   against a deployment.
-- For GitHub tokens: mint one from a real GitHub App, push with it, or check what a
-  ruleset does to it. The minting, the cache, the credential helper and the `gh`
-  wrapper were checked against a fake GitHub and the code's tests, and the
-  [threat model](threat-model.md#github-tokens) section against the code.
+- For GitHub tokens: check what a ruleset does to a token, or run `warden setup github`
+  and the `gh` wrapper on a real agent machine. On 2026-11-09 a token minted from a real
+  App, with its key in a concealed 1Password field read through Connect, had exactly the
+  permissions asked for (a branch, a commit, a pull request and an issue worked; a workflow
+  file and a repository setting were refused), and `git push` through `warden
+  git-credential` worked. The cache and the wrapper were checked against a fake GitHub and
+  the code's tests, and the [threat model](threat-model.md#github-tokens) section against
+  the code.
