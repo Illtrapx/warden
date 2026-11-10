@@ -339,7 +339,7 @@ a live deployment**. Try one before you need it.
 | Credential | Where it lives | How to replace it | What happens to what exists |
 |---|---|---|---|
 | **SSH CA key** | 1Password item tagged `warden:ssh-ca` | [Below](#the-ssh-ca-key) | Read at each approval, so no restart. |
-| **GitHub App's private key** | The 1Password item tagged `warden:github-app` | Add a key to the App on GitHub, replace `private_key` in the item, then delete the old key on GitHub. | Read for each mint, so no restart. Grants stay: the key is not part of the destination digest. Tokens already minted last until GitHub ends them, at most an hour. Changing the App id or installation ends every grant. |
+| **GitHub App's private key** | The 1Password item tagged `warden:github-app` | Add a key to the App on GitHub, replace `private_key` in the item, then delete the old key on GitHub. | Read for each mint, so no restart. Grants stay: the key is not part of the destination digest. Tokens already minted last until GitHub ends them, at most an hour. Changing the App, installation or repository ID requires a new grant. |
 | **API secret** | Its 1Password item | Change the value in the item. | The next call uses it: the value is not part of the destination digest. Changing the origin, prefix, methods, header, format or CA invalidates the grants. |
 | **Relay target's key or password** | Its 1Password item | Change it on the target and in the item. | The next session uses it. Open sessions are unaffected. |
 | **Target host keys** | Its 1Password item | Change `host_keys`. | Part of the destination digest: open grants stop working and the agent asks again. |

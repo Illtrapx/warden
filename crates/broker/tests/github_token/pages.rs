@@ -26,7 +26,7 @@ async fn approval_page_names_app_installation_and_permissions() {
         "pull_requests: write",
         "issues: write",
         "metadata: read",
-        "on every repository the App is installed on",
+        "on the approved repository",
         "tokens last 1 hour and cannot be recalled when revoked",
         "30 days",
     ] {
@@ -49,9 +49,7 @@ async fn approval_page_names_app_installation_and_permissions() {
     let pending = broker.get("/pending").await;
     assert!(pending.body.contains("7654321"), "{}", pending.body);
     assert!(
-        pending
-            .body
-            .contains("on every repository the App is installed on"),
+        pending.body.contains("on the approved repository"),
         "{}",
         pending.body
     );
@@ -69,10 +67,11 @@ async fn destination_changed_between_page_and_approve() {
     let mut auth = broker.enroll_soft_passkey().await;
     let begin = broker.begin_approval(&token, Window::D7).await;
     let (ceremony, credential) = TestBroker::sign(&mut auth, &begin);
-    // Another installation of the same App.
+    // Another repository of the same installation.
     let other = warden_broker::policy::GithubAppKey::new(
         "123456".to_owned(),
-        1,
+        warden_broker::testkit::github_app::INSTALLATION_ID,
+        warden_broker::testkit::github_app::REPOSITORY_ID + 1,
         warden_broker::testkit::github_app::RSA2048_PKCS8,
     )
     .unwrap();

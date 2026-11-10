@@ -276,6 +276,9 @@ pub enum AuditEvent {
         agent: AgentName,
         /// The installation the token is for.
         installation_id: u64,
+        /// The repository the token can access.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        repository_id: Option<u64>,
         /// The permissions the token has, as `name:level`.
         permissions: Vec<String>,
         /// When GitHub ends the token, unix seconds.

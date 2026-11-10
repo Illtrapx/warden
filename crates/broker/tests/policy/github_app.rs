@@ -2,7 +2,9 @@
 
 use serde_json::{Value, json};
 use warden_broker::policy::{PolicyError, SecretBackend};
-use warden_broker::testkit::github_app::{APP_ID, INSTALLATION_ID, RSA2048_PKCS1, RSA2048_PKCS8};
+use warden_broker::testkit::github_app::{
+    APP_ID, INSTALLATION_ID, REPOSITORY_ID, RSA2048_PKCS1, RSA2048_PKCS8,
+};
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -38,6 +40,7 @@ fn full(pem: &[u8]) -> Vec<Value> {
         field("app_id", APP_ID),
         field("installation_id", &INSTALLATION_ID.to_string()),
         field("private_key", std::str::from_utf8(pem).unwrap()),
+        field("repository_id", &REPOSITORY_ID.to_string()),
     ]
 }
 
@@ -83,7 +86,7 @@ async fn two_github_app_items_is_an_error() {
 
 #[tokio::test]
 async fn github_app_missing_field_is_invalid() {
-    for missing in ["app_id", "installation_id", "private_key"] {
+    for missing in ["app_id", "installation_id", "private_key", "repository_id"] {
         let mut fields = full(RSA2048_PKCS8);
         fields.retain(|f| f["label"] != missing);
         let server = with_item(fields).await;
@@ -148,14 +151,16 @@ async fn github_app_repeated_label_is_refused_even_without_a_value() {
 }
 
 #[tokio::test]
-async fn github_app_non_numeric_installation_is_invalid() {
-    for bad in ["abc", "-1", "0", "1.5", "99999999999999999999999"] {
-        let mut fields = full(RSA2048_PKCS8);
-        fields[1] = field("installation_id", bad);
-        let server = with_item(fields).await;
-        let err = backend(&server).github_app().await.unwrap_err();
-        assert!(reason(&err).contains("installation_id"), "{bad}: {err:?}");
-        assert!(!err.to_string().contains(bad), "echoed {bad}: {err}");
+async fn github_app_requires_positive_numeric_ids() {
+    for (index, label) in [(1, "installation_id"), (3, "repository_id")] {
+        for bad in ["abc", "-1", "0", "1.5", "99999999999999999999999"] {
+            let mut fields = full(RSA2048_PKCS8);
+            fields[index] = field(label, bad);
+            let server = with_item(fields).await;
+            let err = backend(&server).github_app().await.unwrap_err();
+            assert!(reason(&err).contains(label), "{bad}: {err:?}");
+            assert!(!err.to_string().contains(bad), "echoed {bad}: {err}");
+        }
     }
 }
 

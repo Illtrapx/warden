@@ -508,6 +508,7 @@ fn github_token_grant_serde_shape() {
     let grant = GrantAccess::GithubToken(GithubTokenGrant {
         app_id: "12345".to_owned(),
         installation_id: 678,
+        repository_id: Some(901),
         digest: "ab12".to_owned(),
     });
     let value = serde_json::to_value(&grant).unwrap();
@@ -517,10 +518,27 @@ fn github_token_grant_serde_shape() {
             "kind": "github_token",
             "app_id": "12345",
             "installation_id": 678,
+            "repository_id": 901,
             "digest": "ab12",
         })
     );
     assert_eq!(serde_json::from_value::<GrantAccess>(value).unwrap(), grant);
+}
+
+#[test]
+fn legacy_github_token_grant_round_trips_without_repository() {
+    let old = serde_json::json!({
+        "kind": "github_token",
+        "app_id": "12345",
+        "installation_id": 678,
+        "digest": "ab12",
+    });
+    let grant = serde_json::from_value::<GrantAccess>(old.clone()).unwrap();
+    let GrantAccess::GithubToken(details) = &grant else {
+        panic!("expected a GitHub token grant");
+    };
+    assert_eq!(details.repository_id, None);
+    assert_eq!(serde_json::to_value(grant).unwrap(), old);
 }
 
 #[test]

@@ -8,6 +8,8 @@ pub const APP_ID: &str = "123456";
 
 /// The installation id of [`github_app_key`].
 pub const INSTALLATION_ID: u64 = 7_654_321;
+/// Repository configured for the test App.
+pub const REPOSITORY_ID: u64 = 123_456;
 
 /// A 2048-bit RSA key as PKCS#1 PEM.
 pub const RSA2048_PKCS1: &[u8] = include_bytes!("github_app/throwaway-test-only-rsa2048-pkcs1.pem");
@@ -37,7 +39,12 @@ pub const RSA2048_PUBLIC_DER: &[u8] =
 /// Never, unless the committed fixture is damaged.
 #[must_use]
 pub fn github_app_key() -> (GithubAppKey, Vec<u8>) {
-    let key = GithubAppKey::new(APP_ID.to_owned(), INSTALLATION_ID, RSA2048_PKCS8)
-        .expect("the committed test key loads");
+    let key = GithubAppKey::new(
+        APP_ID.to_owned(),
+        INSTALLATION_ID,
+        REPOSITORY_ID,
+        RSA2048_PKCS8,
+    )
+    .expect("the committed test key loads");
     (key, RSA2048_PUBLIC_DER.to_vec())
 }

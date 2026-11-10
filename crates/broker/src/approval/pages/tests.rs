@@ -478,6 +478,7 @@ fn github_token_policy() -> GithubTokenPolicy {
     GithubTokenPolicy {
         app_id: "123456".to_owned(),
         installation_id: 7_654_321,
+        repository_id: 123_456,
         max_window: Window::D30,
     }
 }

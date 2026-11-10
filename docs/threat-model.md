@@ -44,8 +44,8 @@ warden does **not** protect against:
 - **What an agent commits while it may sign.** A signature means warden signed the
   commit for that agent, not that anyone reviewed the change. See
   [Commit signing](#commit-signing).
-- **A GitHub token an agent already holds.** A token lasts an hour, covers every
-  repository the GitHub App is installed on, and is a bearer secret the agent has:
+- **A GitHub token an agent already holds.** A token lasts an hour, covers the
+  approved repository, and is a bearer secret the agent has:
   revoking its grant stops new tokens, not that one. See [GitHub tokens](#github-tokens).
 - **Instant revocation everywhere.** An issued certificate stays valid on
   its target until it expires, and an open login to a certificate target continues
@@ -906,12 +906,9 @@ describes that setup.
 
 What an attacker gets, and what stops it:
 
-- **A token covers every repository the App's installation covers**, not the one the agent's
-  goal named. warden asks GitHub for no repository restriction, and could not know which
-  repository a goal means. The owner chooses repositories by installing the App on them and
-  sets what each allows with GitHub's own rules: see
-  [the three levels](github-app.md#the-three-levels-per-repository). The approval page says
-  this in its badge.
+- **A token covers one repository.** The owner sets its GitHub repository ID in the vault
+  item. The approval binds that ID to the grant, and warden passes it to GitHub at each mint.
+  The repository must be part of the installation. Its GitHub rules still apply.
 - **The permissions are fixed**: `contents`, `pull_requests` and `issues` write, `metadata`
   read. Neither the agent nor the owner chooses them at approval, and the broker sends
   exactly these to GitHub whatever the App is allowed. No `workflows`, so GitHub refuses a push
@@ -961,14 +958,14 @@ What holds:
 - **It fails closed.** A database that cannot be read, an App that cannot be read, a grant
   that ended while GitHub was answering, or an entry that cannot be written all mean no token.
   The token leaves the broker only after its entry is written, and only if the same grant is
-  still active afterwards. A grant is bound to the App and installation the owner approved:
-  if either changed, the answer is a 409 and the agent asks again. Replacing only the key
+  still active afterwards. A grant is bound to the App, installation and repository the owner approved.
+  If any changed, the answer is a 409 and the agent asks again. Replacing only the key
   keeps grants.
 - **GitHub's answer is not passed on.** The agent gets fixed texts for a refusal or an
   outage, so nothing GitHub said, including an echo of the JWT or token, reaches it. The
   client trusts the system roots, refuses redirects and reads at most 64 KiB.
 - **Every mint and every refusal is recorded**. A `github_token_minted` entry can be followed by a `github_token_refused` entry for the same call, when the grant ended or was replaced during the mint: the token was then not given out. `github_token_minted` holds the grant, agent,
-  installation, permissions and expiry, and `github_token_refused` the reason. Beyond 30
+  installation, repository ID, permissions and expiry, and `github_token_refused` the reason. Beyond 30
   refusals a minute per agent they are counted in `github_token_refusals_held`, through the
   limiter commit signing uses, so refused calls cannot fill the log. A body over the route's
   16 KiB limit is refused before the caller is known, and is not recorded, as on every route.

@@ -6,7 +6,7 @@ use serde_json::{Value, json};
 use warden_broker_proto::github_token::PERMISSIONS;
 
 use super::{GithubApi, InstallationToken, MintError, jwt, mint};
-use crate::testkit::github_app::{APP_ID, INSTALLATION_ID, github_app_key};
+use crate::testkit::github_app::{APP_ID, INSTALLATION_ID, REPOSITORY_ID, github_app_key};
 use crate::testkit::upstream::{Gate, HttpsUpstream, Scripted};
 
 /// 2026-11-08T12:00:00Z.
@@ -72,7 +72,7 @@ fn jwt_verifies_with_public_key_and_has_claims() {
 }
 
 #[tokio::test]
-async fn mint_sends_fixed_permissions_and_headers() {
+async fn mint_sends_fixed_permissions_and_repository_scope() {
     let (upstream, api) = upstream().await;
     upstream.script_github_token(created("ghs_test", EXPIRES_AT));
     let (key, public) = github_app_key();
@@ -98,7 +98,10 @@ async fn mint_sends_fixed_permissions_and_headers() {
         .iter()
         .map(|(name, level)| ((*name).to_owned(), json!(level)))
         .collect();
-    assert_eq!(body, json!({ "permissions": expected }));
+    assert_eq!(
+        body,
+        json!({ "permissions": expected, "repository_ids": [REPOSITORY_ID] })
+    );
 }
 
 #[tokio::test]

@@ -14,9 +14,8 @@ set it up.
 
 ## What an agent gets
 
-- A token for **every repository the App is installed on**, not one repository. warden cannot
-  narrow it, and does not ask the agent for a repository. What the agent can reach is what you
-  installed the App on: see [the three levels](#the-three-levels-per-repository).
+- A token for **one repository**. The owner sets its numeric GitHub repository ID in
+  the vault item, and the approval page shows that ID. Install the App on that repository.
 - **Fixed permissions**: `contents` write, `pull_requests` write, `issues` write and
   `metadata` read. warden asks GitHub for these and nothing else, whatever the App itself may
   do. No `workflows`, no `administration`.
@@ -85,8 +84,9 @@ broker. The App is yours, on your account or organization.
 
 ## Put the App in 1Password
 
-Add one item to warden's vault, tagged `warden:github-app`, with three custom fields
-labelled `app_id`, `installation_id` and `private_key` (text for the ids, concealed for the key). The exact rules are in
+Add one item to warden's vault, tagged `warden:github-app`, with four custom fields
+labelled `app_id`, `installation_id`, `repository_id` and `private_key` (text for the IDs,
+concealed for the key). Get the repository ID with `gh api repos/OWNER/REPO --jq .id`. The exact rules are in
 [1Password items](1password-items.md#github-app). Paste the whole `.pem` file, header and
 footer lines included, into `private_key`, and delete the downloaded file.
 
@@ -94,8 +94,8 @@ footer lines included, into `private_key`, and delete the downloaded file.
 with it. It cannot tell whether GitHub still accepts the App: only a token tells you that.
 GitHub tokens are off while there is no such item.
 
-Changing the App id or the installation ends every grant made for the old one, and the agents
-ask again. Replacing only the private key keeps the grants, so you can rotate it: add a new
+Changing the App, installation or repository ID requires a new grant. Older grants without
+a repository ID also require a new approval. Replacing only the private key keeps the grants, so you can rotate it: add a new
 key to the App on GitHub, put it in the item, and delete the old key on GitHub.
 
 ## The three levels, per repository

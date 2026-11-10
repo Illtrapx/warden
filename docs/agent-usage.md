@@ -767,7 +767,7 @@ before the real `gh` on `PATH`, as plain `gh` would then run without a token. Wi
 an upgrade that moves the warden binary, as Homebrew's can.
 
 After that `git push`, `git fetch` and `gh` work against GitHub as usual, with a token from
-warden. The token covers **every repository the owner's GitHub App is installed on**, with
+warden. The token covers **the repository the owner approved**, with
 `contents`, `pull_requests` and `issues` write, and lasts an hour. warden keeps it in
 `github-token.json` in its state directory, mode 0600, and gets a new one when less than 5
 minutes of it remain. Use it only through `git` and `gh`: do not print it, write it into a
@@ -877,8 +877,7 @@ never try to get around warden by any other route.
   may already have acted on it.
 - **Revoking commit signing does not undo a signature.** It stops new ones.
 - **Revoking a GitHub token grant does not recall a token already minted.** It stops new
-  ones. A token already out works for up to an hour, and covers every repository the App is
-  installed on.
+  ones. A token already out works for up to an hour, and covers the approved repository.
 - **Revoking does not invalidate an issued certificate** on the target
   ([issue #35][i35]).
 

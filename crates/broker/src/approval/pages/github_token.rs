@@ -1,5 +1,5 @@
 //! What the pages say about GitHub tokens. Its wording matters: the owner must see
-//! how far one grant reaches, which is every repository the App is installed on,
+//! which repository a grant reaches,
 //! and that a minted token outlives the grant's revocation.
 
 use maud::{Markup, html};
@@ -12,7 +12,7 @@ fn reach() -> Markup {
     html! {
         strong.badge.modify {
             (icon(14, "2.4", &warning_icon()))
-            " Can push and merge on every repository the App is installed on"
+            " Can push and merge on the approved repository"
         }
     }
 }
@@ -35,14 +35,14 @@ const REVOKING: &str = "Revoking the grant stops new tokens at once, but tokens 
                         cannot be recalled when revoked.";
 
 /// The App and installation, as the owner approves and later reads them.
-fn app(app_id: &str, installation_id: u64) -> Markup {
-    html! { "GitHub App " code { bdi { (app_id) } } ", installation " code { (installation_id) } }
+fn app(app_id: &str, installation_id: u64, repository_id: u64) -> Markup {
+    html! { "GitHub App " code { bdi { (app_id) } } ", installation " code { (installation_id) } ", repository ID " code { (repository_id) } }
 }
 
 /// What approving GitHub tokens gives, for the approval and pending pages.
-pub(super) fn access(app_id: &str, installation_id: u64) -> Markup {
+pub(super) fn access(app_id: &str, installation_id: u64, repository_id: u64) -> Markup {
     html! {
-        span { "Mint tokens for " (app(app_id, installation_id)) }
+        span { "Mint tokens for " (app(app_id, installation_id, repository_id)) }
         (reach())
         (permissions())
         span.detail {
@@ -53,12 +53,20 @@ pub(super) fn access(app_id: &str, installation_id: u64) -> Markup {
 }
 
 /// What an active GitHub token grant gives, for the grants page.
-pub(super) fn grant_access(app_id: &str, installation_id: u64) -> Markup {
+pub(super) fn grant_access(
+    app_id: &str,
+    installation_id: u64,
+    repository_id: Option<u64>,
+) -> Markup {
     html! {
-        span { "Mints tokens for " (app(app_id, installation_id)) }
-        (reach())
-        (permissions())
-        span.detail { (REVOKING) }
+        @if let Some(repository_id) = repository_id {
+            span { "Mints tokens for " (app(app_id, installation_id, repository_id)) }
+            (reach())
+            (permissions())
+            span.detail { (REVOKING) }
+        } @else {
+            span { "This grant predates repository scoping. Request a new grant to mint tokens." }
+        }
     }
 }
 

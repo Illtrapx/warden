@@ -19,7 +19,7 @@ impl Backend {
         match self {
             Self::OnePassword => {
                 "To mint GitHub tokens for agents, tag one item warden:github-app, with the \
-                 fields app_id, installation_id and private_key (the App's RSA key as PEM): see \
+                 fields app_id, installation_id, repository_id and private_key (the App's RSA key as PEM): see \
                  docs/1password-items.md."
             }
             Self::Local => {
@@ -41,10 +41,11 @@ pub(super) fn check(probe: Option<GithubAppProbe>, backend: Backend) -> Check {
         Some(GithubAppProbe::Loaded {
             app_id,
             installation_id,
+            repository_id,
         }) => Check::pass(
             NAME,
             format!(
-                "The GitHub App loads: App {app_id}, installation {installation_id}. Warden \
+                "The GitHub App loads: App {app_id}, installation {installation_id}, repository ID {repository_id}. Warden \
                  cannot tell whether GitHub still accepts it."
             ),
         ),
@@ -80,6 +81,7 @@ mod tests {
         let loaded = GithubAppProbe::Loaded {
             app_id: "123".to_owned(),
             installation_id: 456,
+            repository_id: 789,
         };
         let report = check(Some(loaded), Backend::OnePassword);
         assert_eq!(report.status, Status::Pass);

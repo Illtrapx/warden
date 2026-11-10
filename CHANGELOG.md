@@ -11,9 +11,9 @@ All notable changes to this project are recorded here. The format follows
 - GitHub tokens for agents, so that `git push` and `gh` work with no personal access token
   or deploy key on the agent's machine. The broker holds the private key of a GitHub App
   you create (a 1Password item tagged `warden:github-app`, with fields labelled `app_id`,
-  `installation_id` and `private_key`; the local backend cannot hold one) and mints an
+  `installation_id`, `repository_id` and `private_key`; the local backend cannot hold one) and mints an
   installation token for an agent that has a `github_token` grant. The token lasts GitHub's
-  hour, covers every repository the App is installed on, and has `contents`,
+  hour, covers one approved repository, and has `contents`,
   `pull_requests` and `issues` write and `metadata` read, and nothing else. **The agent holds
   the token, and revoking a grant does not recall one already minted**: it is the first
   access where an agent holds a usable credential. A grant lasts 1, 7 or 30 days (30 by

@@ -312,6 +312,7 @@ mod tests {
             access: GrantAccess::GithubToken(GithubTokenGrant {
                 app_id: "123456".to_owned(),
                 installation_id: 7,
+                repository_id: Some(8),
                 digest: "d".repeat(64),
             }),
         };

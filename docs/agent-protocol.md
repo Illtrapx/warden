@@ -830,7 +830,7 @@ field is refused.
   (`{"error":"GitHub tokens are not configured on this broker"}`).
 - `403` `{"error":"no active GitHub token grant for this agent"}`: none was ever granted,
   or it ended or was revoked.
-- `409` `{"error":"the GitHub App changed; request a new grant"}`: the App or installation
+- `409` `{"error":"the GitHub App changed; request a new grant"}`: the App, installation or repository
   is no longer the one the owner approved.
 - `409` `{"error":"grant revoked during the call"}` or `{"error":"grant expired during the
   call"}`: the grant ended while the token was being minted, or was replaced by a new
@@ -1035,7 +1035,7 @@ as `warden -Y sign -n git -f <public key> [-U] <file>` and reads `<file>.sig`.
 Asked for with `{"kind":"github_token"}` as `access` and a `window` of `1d`, `7d` or `30d`:
 
 ```json
-{"grant_id":"5e1c…","not_before":1793091612,"not_after":1795683612,"access":{"kind":"github_token","app_id":"123456","installation_id":7890123,"digest":"…"}}
+{"grant_id":"5e1c…","not_before":1793091612,"not_after":1795683612,"access":{"kind":"github_token","app_id":"123456","installation_id":7890123,"repository_id":123456,"digest":"…"}}
 ```
 
 The request is refused with a `400` when the broker holds no GitHub App
@@ -1043,9 +1043,9 @@ The request is refused with a `400` when the broker holds no GitHub App
 There is nothing to install and the grant id is not needed: `POST /v1/github-token` uses the
 agent's own active grant, read anew for each token. An agent has one at a time: approving a
 new one ends the one before it, whose `not_after` stops counting. Minting is refused with a
-`409` once the broker's App or installation is no longer the one with this `digest`.
+`409` once the broker's App, installation or repository is no longer the one with this `digest`.
 
-The token covers every repository the App's installation covers, with `contents`,
+The token covers the approved repository, with `contents`,
 `pull_requests` and `issues` write and `metadata` read. A client chooses neither repositories
 nor permissions. Unlike the other kinds, this grant gives the agent a credential that outlives
 the grant: tokens last an hour, and revoking does not recall one. A client should keep the

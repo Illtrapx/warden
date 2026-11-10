@@ -153,7 +153,7 @@ fn jwt(key: &GithubAppKey, now: i64) -> Result<Zeroizing<String>, MintError> {
 }
 
 /// Mint an installation token for `key`'s installation with the fixed
-/// [`PERMISSIONS`] and no repository restriction. `now` is Unix seconds.
+/// [`PERMISSIONS`] and exactly one repository. `now` is Unix seconds.
 ///
 /// The client trusts the system roots (or the pinned CA), refuses redirects and
 /// never retries.
@@ -184,7 +184,8 @@ pub async fn mint(
         .iter()
         .map(|(name, level)| ((*name).to_owned(), json!(level)))
         .collect();
-    let body = json!({ "permissions": permissions }).to_string();
+    let body =
+        json!({ "permissions": permissions, "repository_ids": [key.repository_id()] }).to_string();
     let request = api
         .client()?
         .post(url)

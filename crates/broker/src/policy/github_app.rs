@@ -28,8 +28,14 @@ const MAX_APP_ID_CHARS: usize = 64;
 /// Item fields, by label.
 const APP_ID_FIELD: &str = "app_id";
 const INSTALLATION_ID_FIELD: &str = "installation_id";
+const REPOSITORY_ID_FIELD: &str = "repository_id";
 const PRIVATE_KEY_FIELD: &str = "private_key";
-const LABELS: [&str; 3] = [APP_ID_FIELD, INSTALLATION_ID_FIELD, PRIVATE_KEY_FIELD];
+const LABELS: [&str; 4] = [
+    APP_ID_FIELD,
+    INSTALLATION_ID_FIELD,
+    REPOSITORY_ID_FIELD,
+    PRIVATE_KEY_FIELD,
+];
 
 fn app_error(reason: &str) -> PolicyError {
     PolicyError::GithubApp(reason.to_owned())
@@ -44,6 +50,7 @@ fn app_error(reason: &str) -> PolicyError {
 pub struct GithubAppKey {
     app_id: String,
     installation_id: u64,
+    repository_id: u64,
     key: Arc<KeyPair>,
 }
 
@@ -54,7 +61,12 @@ impl GithubAppKey {
     /// # Errors
     /// [`PolicyError::GithubApp`] with a fixed reason, if an id is not plain text or
     /// the key is not usable. It never quotes the key.
-    pub fn new(app_id: String, installation_id: u64, pem: &[u8]) -> Result<Self, PolicyError> {
+    pub fn new(
+        app_id: String,
+        installation_id: u64,
+        repository_id: u64,
+        pem: &[u8],
+    ) -> Result<Self, PolicyError> {
         let plain = |c: char| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-');
         if app_id.is_empty()
             || app_id.chars().count() > MAX_APP_ID_CHARS
@@ -67,9 +79,13 @@ impl GithubAppKey {
         if installation_id == 0 {
             return Err(app_error("the installation id must not be 0"));
         }
+        if repository_id == 0 {
+            return Err(app_error("the repository id must not be 0"));
+        }
         Ok(Self {
             app_id,
             installation_id,
+            repository_id,
             key: Arc::new(parse_rsa_key(pem)?),
         })
     }
@@ -84,6 +100,12 @@ impl GithubAppKey {
     #[must_use]
     pub const fn installation_id(&self) -> u64 {
         self.installation_id
+    }
+
+    /// The sole repository a minted token can access.
+    #[must_use]
+    pub const fn repository_id(&self) -> u64 {
+        self.repository_id
     }
 
     /// An RSASSA-PKCS1-v1_5 signature of `message` with SHA-256 (JWT `RS256`).
@@ -109,6 +131,7 @@ impl GithubAppKey {
         GithubTokenPolicy {
             app_id: self.app_id.clone(),
             installation_id: self.installation_id,
+            repository_id: self.repository_id,
             max_window,
         }
     }
@@ -119,6 +142,7 @@ impl fmt::Debug for GithubAppKey {
         f.debug_struct("GithubAppKey")
             .field("app_id", &self.app_id)
             .field("installation_id", &self.installation_id)
+            .field("repository_id", &self.repository_id)
             .finish_non_exhaustive()
     }
 }
@@ -191,17 +215,21 @@ pub(super) fn parse_item(title: &str, fields: &[SecretField]) -> Result<GithubAp
         other => other,
     };
     let app_id = field(APP_ID_FIELD)?.to_owned();
-    let installation_id = field(INSTALLATION_ID_FIELD)?
-        .parse::<u64>()
-        .ok()
-        .filter(|id| *id != 0)
-        .ok_or_else(|| {
-            PolicyError::GithubApp(format!(
-                "item \"{title}\": field \"{INSTALLATION_ID_FIELD}\" must be a positive number"
-            ))
-        })?;
+    let positive_id = |label| {
+        field(label)?
+            .parse::<u64>()
+            .ok()
+            .filter(|id| *id != 0)
+            .ok_or_else(|| {
+                PolicyError::GithubApp(format!(
+                    "item \"{title}\": field \"{label}\" must be a positive number"
+                ))
+            })
+    };
+    let installation_id = positive_id(INSTALLATION_ID_FIELD)?;
+    let repository_id = positive_id(REPOSITORY_ID_FIELD)?;
     let pem = Zeroizing::new(field(PRIVATE_KEY_FIELD)?.as_bytes().to_vec());
-    GithubAppKey::new(app_id, installation_id, &pem).map_err(|e| match e {
+    GithubAppKey::new(app_id, installation_id, repository_id, &pem).map_err(|e| match e {
         PolicyError::GithubApp(reason) if reason.contains("private key") => in_item(
             PolicyError::GithubApp(format!("field \"{PRIVATE_KEY_FIELD}\": {reason}")),
         ),
@@ -217,21 +245,25 @@ pub struct GithubTokenPolicy {
     pub app_id: String,
     /// The installation tokens are minted for.
     pub installation_id: u64,
+    /// The repository the grant allows.
+    pub repository_id: u64,
     /// Longest window that may be granted.
     pub max_window: Window,
 }
 
 impl GithubTokenPolicy {
-    /// Lowercase hex digest of what a grant is bound to: the App and installation.
-    /// Changing either ends every grant made for the old one. The key itself is not
+    /// Lowercase hex digest of what a grant is bound to: the App, installation and repository.
+    /// Changing any of them ends every grant made for the old one. The key itself is not
     /// part of it: rotating it keeps grants, because the App stays the same.
     #[must_use]
     pub fn destination_digest(&self) -> String {
         let mut hasher = Sha256::new();
-        hasher.update(b"warden github-token v1\0");
+        hasher.update(b"warden github-token v2\0");
         hasher.update(self.app_id.as_bytes());
         hasher.update(b"\0");
         hasher.update(self.installation_id.to_string().as_bytes());
+        hasher.update(b"\0");
+        hasher.update(self.repository_id.to_string().as_bytes());
         hex::encode(hasher.finalize())
     }
 
@@ -241,6 +273,7 @@ impl GithubTokenPolicy {
         GithubTokenGrant {
             app_id: self.app_id.clone(),
             installation_id: self.installation_id,
+            repository_id: Some(self.repository_id),
             digest: self.destination_digest(),
         }
     }
@@ -255,6 +288,8 @@ pub enum GithubAppProbe {
         app_id: String,
         /// The installation tokens are minted for.
         installation_id: u64,
+        /// The repository the tokens are restricted to.
+        repository_id: u64,
     },
     /// None is configured, which is fine unless GitHub tokens are wanted.
     NotConfigured,
@@ -272,6 +307,7 @@ impl GithubAppProbe {
             Ok(key) => Self::Loaded {
                 app_id: key.app_id,
                 installation_id: key.installation_id,
+                repository_id: key.repository_id,
             },
             Err(PolicyError::NoGithubApp) => Self::NotConfigured,
             Err(PolicyError::GithubApp(reason)) => Self::Invalid(reason),
@@ -288,12 +324,13 @@ mod tests {
     use super::{GithubAppKey, GithubAppProbe};
     use crate::policy::PolicyError;
     use crate::testkit::github_app::{
-        APP_ID, EC_P256_PKCS8, ED25519_PKCS8, INSTALLATION_ID, RSA1024_PKCS8, RSA2048_ENCRYPTED,
-        RSA2048_ENCRYPTED_PKCS1, RSA2048_PKCS1, RSA2048_PKCS8, RSA2048_PUBLIC_DER,
+        APP_ID, EC_P256_PKCS8, ED25519_PKCS8, INSTALLATION_ID, REPOSITORY_ID, RSA1024_PKCS8,
+        RSA2048_ENCRYPTED, RSA2048_ENCRYPTED_PKCS1, RSA2048_PKCS1, RSA2048_PKCS8,
+        RSA2048_PUBLIC_DER,
     };
 
     fn load(pem: &[u8]) -> Result<GithubAppKey, PolicyError> {
-        GithubAppKey::new(APP_ID.to_owned(), INSTALLATION_ID, pem)
+        GithubAppKey::new(APP_ID.to_owned(), INSTALLATION_ID, REPOSITORY_ID, pem)
     }
 
     #[test]
@@ -337,8 +374,13 @@ mod tests {
     #[test]
     fn github_app_rejects_ids_that_are_not_plain() {
         for bad in ["", "12 34", "12\"34", "12\n34", &"1".repeat(65)] {
-            let err =
-                GithubAppKey::new(bad.to_owned(), INSTALLATION_ID, RSA2048_PKCS8).unwrap_err();
+            let err = GithubAppKey::new(
+                bad.to_owned(),
+                INSTALLATION_ID,
+                REPOSITORY_ID,
+                RSA2048_PKCS8,
+            )
+            .unwrap_err();
             assert!(matches!(err, PolicyError::GithubApp(_)), "{bad:?}: {err:?}");
         }
     }
@@ -358,20 +400,26 @@ mod tests {
         let base = load(RSA2048_PKCS8).unwrap().policy(Window::D30);
         let longer = load(RSA2048_PKCS8).unwrap().policy(Window::D7);
         assert_eq!(base.destination_digest(), longer.destination_digest());
-        let other_app = GithubAppKey::new("654321".to_owned(), INSTALLATION_ID, RSA2048_PKCS8)
-            .unwrap()
-            .policy(Window::D30);
-        let other_installation = GithubAppKey::new(APP_ID.to_owned(), 1, RSA2048_PKCS8)
-            .unwrap()
-            .policy(Window::D30);
+        let other_app = GithubAppKey::new(
+            "654321".to_owned(),
+            INSTALLATION_ID,
+            REPOSITORY_ID,
+            RSA2048_PKCS8,
+        )
+        .unwrap()
+        .policy(Window::D30);
+        let other_installation =
+            GithubAppKey::new(APP_ID.to_owned(), 1, REPOSITORY_ID, RSA2048_PKCS8)
+                .unwrap()
+                .policy(Window::D30);
         assert_ne!(base.destination_digest(), other_app.destination_digest());
         assert_ne!(
             base.destination_digest(),
             other_installation.destination_digest()
         );
         // "1" + "23" and "12" + "3" must not collide.
-        let a = GithubAppKey::new("1".to_owned(), 23, RSA2048_PKCS8).unwrap();
-        let b = GithubAppKey::new("12".to_owned(), 3, RSA2048_PKCS8).unwrap();
+        let a = GithubAppKey::new("1".to_owned(), 23, REPOSITORY_ID, RSA2048_PKCS8).unwrap();
+        let b = GithubAppKey::new("12".to_owned(), 3, REPOSITORY_ID, RSA2048_PKCS8).unwrap();
         assert_ne!(
             a.policy(Window::D30).destination_digest(),
             b.policy(Window::D30).destination_digest()
@@ -389,7 +437,8 @@ mod tests {
             GithubAppProbe::of(load(RSA2048_PKCS8)),
             GithubAppProbe::Loaded {
                 app_id: APP_ID.to_owned(),
-                installation_id: INSTALLATION_ID
+                installation_id: INSTALLATION_ID,
+                repository_id: REPOSITORY_ID,
             }
         );
         assert_eq!(

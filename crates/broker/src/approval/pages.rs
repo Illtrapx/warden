@@ -235,7 +235,7 @@ fn destination_access(request: &CreateRequest, destination: &Destination) -> Mar
         },
         Destination::CommitSigning(policy) => commit_signing::access(&policy.key_fingerprint),
         Destination::GithubToken(policy) => {
-            github_token::access(&policy.app_id, policy.installation_id)
+            github_token::access(&policy.app_id, policy.installation_id, policy.repository_id)
         }
     }
 }
@@ -265,7 +265,7 @@ fn grant_access(grant: &ActiveGrant) -> Markup {
             commit_signing::grant_access(&signing.key_fingerprint)
         }
         GrantAccess::GithubToken(token) => {
-            github_token::grant_access(&token.app_id, token.installation_id)
+            github_token::grant_access(&token.app_id, token.installation_id, token.repository_id)
         }
     }
 }

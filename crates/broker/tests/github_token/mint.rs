@@ -9,7 +9,7 @@ use serde_json::{Value, json};
 use warden_broker::github_app::GithubApi;
 use warden_broker::policy::GithubAppKey;
 use warden_broker::requests::Clock as _;
-use warden_broker::testkit::github_app::{APP_ID, INSTALLATION_ID, RSA2048_PKCS8};
+use warden_broker::testkit::github_app::{APP_ID, INSTALLATION_ID, REPOSITORY_ID, RSA2048_PKCS8};
 use warden_broker::testkit::upstream::{Gate, HttpsUpstream, Scripted};
 use warden_broker::testkit::{TestBroker, TestResponse};
 use warden_broker_proto::Window;
@@ -138,6 +138,7 @@ async fn mint_returns_token_under_grant() {
     assert_eq!(minted[0]["grant_id"], grant);
     assert_eq!(minted[0]["agent"], "bot");
     assert_eq!(minted[0]["installation_id"], INSTALLATION_ID);
+    assert_eq!(minted[0]["repository_id"], REPOSITORY_ID);
     assert_eq!(
         minted[0]["permissions"],
         json!([
@@ -256,7 +257,13 @@ async fn replaced_during_mint_not_returned() {
 #[tokio::test]
 async fn app_changed_since_approval_is_409() {
     let (broker, upstream, key, _) = granted().await;
-    let other = GithubAppKey::new(APP_ID.to_owned(), INSTALLATION_ID + 1, RSA2048_PKCS8).unwrap();
+    let other = GithubAppKey::new(
+        APP_ID.to_owned(),
+        INSTALLATION_ID,
+        REPOSITORY_ID + 1,
+        RSA2048_PKCS8,
+    )
+    .unwrap();
     broker.backend.set_github_app(Some(other));
     let resp = mint(&broker, &key).await;
     assert_refused(

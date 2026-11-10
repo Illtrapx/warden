@@ -37,7 +37,10 @@ pub struct GithubTokenGrant {
     pub app_id: String,
     /// The installation the tokens are minted for.
     pub installation_id: u64,
-    /// Lowercase hex digest of the approved App and installation: minting is
+    /// The approved repository. Older, installation-wide grants omit it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub repository_id: Option<u64>,
+    /// Lowercase hex digest of the approved App, installation and repository: minting is
     /// refused once the broker's App no longer matches it.
     pub digest: String,
 }

@@ -102,7 +102,9 @@ async fn attempt(
         .await
         .map_err(RequestError::from)?;
     let current = key.policy(state.requests.github_token_max());
-    if current.destination_digest() != grant.digest {
+    if grant.repository_id != Some(current.repository_id)
+        || current.destination_digest() != grant.digest
+    {
         return Err(refused(StatusCode::CONFLICT, APP_CHANGED));
     }
     // Taken before GitHub is asked, so that refused calls cost GitHub nothing.
@@ -121,6 +123,7 @@ async fn attempt(
         grant_id: grant_id.clone(),
         agent: agent.clone(),
         installation_id: key.installation_id(),
+        repository_id: Some(key.repository_id()),
         permissions: PERMISSIONS
             .iter()
             .map(|(name, level)| format!("{name}:{level}"))
