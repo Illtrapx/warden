@@ -781,8 +781,9 @@ script again (or `systemctl restart warden-firewall`) after you edit it.
   that GitHub publishes for its API (the `api` list of
   `https://api.github.com/meta`). Without them every mint fails with
   `503` "GitHub could not issue a token", and the broker logs "GitHub could not
-  be reached". GitHub changes those ranges, so an egress proxy that allows
-  `api.github.com` by its TLS server name (SNI) is easier to keep right. Name resolution needs no rule: Docker's embedded
+  be reached". GitHub changes those ranges. warden's GitHub client uses no
+  HTTP proxy, so the alternative is a transparent relay that passes TLS
+  through and allows `api.github.com` by its server name (SNI). Name resolution needs no rule: Docker's embedded
   DNS resolver answers inside the container and queries upstream from the
   host.
 - An address rule pins an IP, not a name. If an origin's addresses change

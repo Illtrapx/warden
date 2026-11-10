@@ -15,8 +15,9 @@ set it up.
 ## What an agent gets
 
 - A token for **every repository the App is installed on**, not one repository. warden cannot
-  narrow it, and does not ask the agent for a repository. What the agent can reach is what you
-  installed the App on: see [the three levels](#the-three-levels-per-repository).
+  narrow it, and does not ask the agent for a repository. What the agent can push to and edit
+  is what you installed the App on: see [the three levels](#the-three-levels-per-repository).
+  Issues and comments reach further: see below.
 - **Fixed permissions**: `contents` write, `pull_requests` write, `issues` write and
   `metadata` read. warden asks GitHub for these and nothing else, whatever the App itself may
   do. No `workflows`, no `administration`.
@@ -29,7 +30,8 @@ set it up.
   be a reflex tap.
 - One grant at a time per agent. Approving a new one ends the one before it.
 - **Issues and comments on public repositories, too.** Opening an issue or commenting on a
-  public repository needs only read access, and an App's token can read public repositories.
+  public repository needs only read access, and GitHub documents that an App's token can read
+  public repositories.
   So the agent can post as the App on public repositories you did not install it on: tested
   on one of the owner's own, and to be assumed for anyone's. Choosing repositories limits pushes, pull requests and edits, not that.
   What it posts shows as the App (`<app name>[bot]`), and GitHub's logs, not warden's, record it.

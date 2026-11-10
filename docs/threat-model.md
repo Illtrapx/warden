@@ -45,7 +45,8 @@ warden does **not** protect against:
   commit for that agent, not that anyone reviewed the change. See
   [Commit signing](#commit-signing).
 - **A GitHub token an agent already holds.** A token lasts an hour, covers every
-  repository the GitHub App is installed on, and is a bearer secret the agent has:
+  repository the GitHub App is installed on, can post issues and comments on public
+  repositories outside it, and is a bearer secret the agent has:
   revoking its grant stops new tokens, not that one. See [GitHub tokens](#github-tokens).
 - **Instant revocation everywhere.** An issued certificate stays valid on
   its target until it expires, and an open login to a certificate target continues
